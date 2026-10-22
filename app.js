@@ -1,7 +1,7 @@
 /* Mes Locations — PWA (vanilla JS) */
 'use strict';
 
-const VERSION = '1.0.2';
+const VERSION = '1.0.3';
 const MOIS = ['janvier', 'février', 'mars', 'avril', 'mai', 'juin', 'juillet', 'août', 'septembre', 'octobre', 'novembre', 'décembre'];
 const LS_CFG = 'ml_cfg', LS_CACHE = 'ml_cache';
 
@@ -202,6 +202,10 @@ function vueAccueil() {
         ${s.p?.valide_le && !s.p?.quittance_le ? `<button class="btn primary grow" data-act="envoyerQ" data-log="${l.id}" data-per="${per}">Envoyer la quittance</button>` : ''}
       </div>
       <div class="status st-${a.cls}" style="margin-top:10px"><i class="dot"></i><div><strong>${esc(a.titre)}</strong>${a.detail ? `<span class="small">${esc(a.detail)}</span>` : ''}</div></div>
+      ${a.cls === 'warn' ? `<div class="actions">
+        <button class="btn primary grow" data-act="recueBtn" data-log="${l.id}">Attestation reçue</button>
+        <button class="btn ghost grow" data-act="envoyerA" data-log="${l.id}" data-relance="1">Relancer</button>
+      </div>` : ''}
     </article>`;
   });
 
@@ -525,6 +529,12 @@ document.addEventListener('click', async (e) => {
         const bytes = Uint8Array.from(atob(r.base64), (c) => c.charCodeAt(0));
         window.open(URL.createObjectURL(new Blob([bytes], { type: 'application/pdf' })), '_blank');
       } catch (err) { toast(err.message, true); } finally { chargement(false); }
+      break;
+    }
+    case 'recueBtn': {
+      const y = maintenant().getFullYear();
+      if (!await confirmer('Attestation ' + y + ' reçue ?', 'Les relances automatiques s\'arrêtent pour cette année.', 'Confirmer')) return;
+      action('Enregistrement…', 'assuranceRecue', { logement: log, recue: true }, 'Attestation marquée reçue');
       break;
     }
     case 'effacerErreur': action('…', 'effacerErreur', {}, 'Erreur effacée'); break;
