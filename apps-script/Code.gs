@@ -54,7 +54,14 @@ function schema_() {
     ['copie_cachee', 'text', 'chris.soulas@gmail.com', 'Adresse en copie cachée de chaque envoi', true],
     ['signature', 'text', 'Christophe SOULAS', 'Signature des emails', true],
     ['email_alertes', 'text', 'chris.soulas@gmail.com', 'Adresse qui reçoit les alertes (paiement non validé, erreur)', true],
-    ['alertes_actives', 'bool', 'TRUE', 'Recevoir les alertes', true],
+    ['alertes_actives', 'bool', 'TRUE', 'Recevoir les emails de notification (interrupteur général)', true],
+    ['notif_loyer', 'bool', 'TRUE', 'Email quand un loyer est à valider (jour de l\'échéance)', true],
+    ['notif_loyer_rappel_jours', 'num', '3', 'Rappel si le loyer n\'est toujours pas validé X jours après l\'échéance (0 = jamais)', true],
+    ['notif_attestation', 'bool', 'TRUE', 'Email pour confirmer la réception de l\'attestation d\'assurance', true],
+    ['notif_attestation_jours', 'num', '7', 'Délai après la demande (puis entre deux emails) pour confirmer l\'attestation', true],
+    ['notif_quittance_bloquee', 'bool', 'TRUE', 'Email si un paiement est validé mais la quittance n\'est pas partie', true],
+    ['recap_mensuel', 'bool', 'TRUE', 'Récapitulatif mensuel le 1er du mois', true],
+    ['app_url', 'text', 'https://chrissorbadere.github.io/Loyers/index.html', 'Adresse de l\'application (lien des emails)', true],
     ['quittance_jour', 'num', '10', 'Jour d\'envoi des quittances (1-31)', true],
     ['quittance_heure', 'num', '12', 'Heure d\'envoi (0-23)', true],
     ['envoi_a_la_validation', 'bool', 'TRUE', 'Si la date est passée, envoyer la quittance dès la validation du paiement', true],
@@ -91,10 +98,15 @@ function schema_() {
     s.push([id + '.derniere_relance', 'text', '', L.libelle + ' : date de la dernière relance (auto)', false]);
     s.push([id + '.assurance_recue', 'text', '', L.libelle + ' : année de la dernière attestation reçue', false]);
     s.push([id + '.alerte_periode', 'text', '', L.libelle + ' : dernière alerte paiement (auto)', false]);
+    s.push([id + '.alerte_rappel_periode', 'text', '', L.libelle + ' : dernier rappel « loyer à valider » (auto)', false]);
+    s.push([id + '.alerte_bloquee_periode', 'text', '', L.libelle + ' : dernière alerte quittance bloquée (auto)', false]);
+    s.push([id + '.alerte_attestation', 'text', '', L.libelle + ' : dernier email attestation à confirmer (auto)', false]);
     s.push([id + '.rappel_impaye', 'bool', 'FALSE', L.libelle + ' : rappel automatique si loyer impayé', true]);
     s.push([id + '.rappel_periode', 'text', '', L.libelle + ' : dernier rappel de loyer envoyé (auto)', false]);
   });
   s.push(['derniere_erreur', 'text', '', 'Dernière erreur d\'envoi (auto)', false]);
+  s.push(['derniere_erreur_msg', 'text', '', 'Texte de la dernière erreur signalée par email (auto)', false]);
+  s.push(['recap_dernier', 'text', '', 'Mois du dernier récapitulatif envoyé (auto)', false]);
   s.push(['token', 'text', '', 'CODE SECRET de l\'application — ne pas partager', false]);
   return s;
 }
@@ -193,9 +205,7 @@ function tacheAutomatique() {
           if (p && p.valide_le && !p.quittance_le) {
             envoyerQuittance_(id, periode);
           } else if ((!p || !p.valide_le) && P[id + '.alerte_periode'] !== periode) {
-            alerte_(P, 'Loyer ' + L.libelle + ' non validé — quittance en attente',
-              'Le paiement du loyer de ' + MOIS[mois - 1] + ' ' + annee + ' (' + L.libelle + ') n\'est pas encore validé.\n' +
-              'La quittance sera envoyée dès que tu l\'auras validé dans l\'application.');
+            if (bool_(P.notif_loyer)) notifierLoyer_(P, id, periode, false);
             ecrireParam_(id + '.alerte_periode', periode);
           }
         } catch (err) { erreurs.push(L.libelle + ' (quittance) : ' + err.message); }
@@ -209,6 +219,25 @@ function tacheAutomatique() {
           const p = trouverPaiement_(id, periode);
           if (now >= limite && (!p || !p.valide_le)) envoyerRappelLoyer_(id, periode);
         } catch (err) { erreurs.push(L.libelle + ' (rappel loyer) : ' + err.message); }
+      }
+
+      // ---- Notifications à Chris : rappel de validation, quittance bloquée ----
+      if (bool_(P[id + '.quittance_active'])) {
+        try {
+          const ech = dateEcheance_(P, periode);
+          const p = trouverPaiement_(id, periode);
+          const nj = Number(P.notif_loyer_rappel_jours || 0);
+          if (bool_(P.notif_loyer) && nj > 0 && (!p || !p.valide_le) && P[id + '.alerte_rappel_periode'] !== periode &&
+              now >= new Date(ech.getTime() + nj * 86400000)) {
+            notifierLoyer_(P, id, periode, true);
+            ecrireParam_(id + '.alerte_rappel_periode', periode);
+          }
+          if (bool_(P.notif_quittance_bloquee) && p && p.valide_le && !p.quittance_le &&
+              P[id + '.alerte_bloquee_periode'] !== periode && now >= new Date(ech.getTime() + 3 * 3600000)) {
+            notifierBloquee_(P, id, periode);
+            ecrireParam_(id + '.alerte_bloquee_periode', periode);
+          }
+        } catch (err) { erreurs.push(L.libelle + ' (notification) : ' + err.message); }
       }
 
       // ---- Assurance annuelle + relances ----
@@ -226,13 +255,44 @@ function tacheAutomatique() {
             if (jours >= Number(P.relance_jours || 15)) envoyerAssurance_(id, true);
           }
         } catch (err) { erreurs.push(L.libelle + ' (assurance) : ' + err.message); }
+
+        // Email à Chris : « as-tu reçu l'attestation ? »
+        try {
+          const P2 = lireParams_();
+          const env = String(P2[id + '.assurance_envoyee'] || '');
+          if (bool_(P2.notif_attestation) && env && Number(env.slice(0, 4)) === annee &&
+              String(P2[id + '.assurance_recue']) !== String(annee)) {
+            const delai = Math.max(1, Number(P2.notif_attestation_jours || 7));
+            const base = P2[id + '.alerte_attestation'] || env;
+            if ((now - parseDate_(base)) / 86400000 >= delai) {
+              notifierAttestation_(P2, id);
+              ecrireParam_(id + '.alerte_attestation', Utilities.formatDate(now, tz, 'yyyy-MM-dd'));
+            }
+          }
+        } catch (err) { erreurs.push(L.libelle + ' (notification attestation) : ' + err.message); }
       }
     });
 
+    // ---- Récapitulatif mensuel (le 1er du mois) ----
+    if (bool_(P.recap_mensuel) && jour === 1 && heure >= 8 && P.recap_dernier !== periode) {
+      try {
+        envoyerRecap_(lireParams_(), periode);
+        ecrireParam_('recap_dernier', periode);
+      } catch (err) { erreurs.push('Récapitulatif : ' + err.message); }
+    }
+
     if (erreurs.length) {
-      const texte = Utilities.formatDate(now, tz, 'dd/MM/yyyy HH:mm') + ' — ' + erreurs.join(' | ');
+      const msg = erreurs.join(' | ');
+      const texte = Utilities.formatDate(now, tz, 'dd/MM/yyyy HH:mm') + ' — ' + msg;
       ecrireParam_('derniere_erreur', texte);
-      alerte_(P, 'Erreur d\'envoi — Mes Locations', texte);
+      if (P.derniere_erreur_msg !== msg) {
+        notifier_(P, 'Erreur d\'envoi', 'Un envoi automatique a échoué',
+          ['Le script n\'a pas pu terminer une tâche automatique. Il réessaiera toutes les heures.'],
+          [['Détail', msg], ['Quand', Utilities.formatDate(now, tz, 'dd/MM/yyyy HH:mm')]],
+          'Ouvrir l\'application', 'accueil',
+          'Vérifie l\'adresse du locataire dans Réglages, puis touche « Effacer » sur le bandeau d\'erreur.');
+        ecrireParam_('derniere_erreur_msg', msg);
+      }
     }
   } finally {
     lock.releaseLock();
@@ -343,10 +403,141 @@ function envoyerMail_(P, id, destinataire, objet, corps, pdf) {
   GmailApp.sendEmail(destinataire, objet, corps, options);
 }
 
-function alerte_(P, sujet, texte) {
+// ---------- Notifications par email (à Chris) ----------
+function lienApp_(P, hash) {
+  const base = String(P.app_url || 'https://chrissorbadere.github.io/Loyers/index.html').split('#')[0];
+  return base + (hash ? '#' + hash : '');
+}
+
+function escHtml_(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+    return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+  });
+}
+
+// titre court (objet), accroche (titre du mail), paragraphes, lignes [libellé, valeur], bouton, lien, conseil
+function notifier_(P, objet, titre, paragraphes, lignes, bouton, hash, conseil) {
   if (!bool_(P.alertes_actives)) return;
   const dest = String(P.email_alertes || '').trim();
-  if (dest) GmailApp.sendEmail(dest, '[Mes Locations] ' + sujet, texte, { name: 'Mes Locations' });
+  if (!dest) return;
+  const url = lienApp_(P, hash);
+  const texte = titre + '\n\n' + paragraphes.join('\n\n') + '\n\n' +
+    (lignes || []).map(function (l) { return '- ' + l[0] + ' : ' + l[1]; }).join('\n') +
+    (conseil ? '\n\n' + conseil : '') + '\n\n' + bouton + ' : ' + url + '\n';
+  const html =
+    '<div style="font-family:Arial,Helvetica,sans-serif;background:#F4F1EA;padding:24px 12px">' +
+    '<div style="max-width:520px;margin:0 auto;background:#ffffff;border-radius:16px;padding:24px;border:1px solid #E2DDD2">' +
+    '<div style="font-size:13px;color:#6E695F;margin-bottom:6px">Mes Locations</div>' +
+    '<h1 style="font-size:21px;line-height:1.3;color:#1D1C19;margin:0 0 14px">' + escHtml_(titre) + '</h1>' +
+    paragraphes.map(function (p) { return '<p style="font-size:15px;line-height:1.5;color:#1D1C19;margin:0 0 12px">' + escHtml_(p) + '</p>'; }).join('') +
+    ((lignes && lignes.length) ? '<table style="width:100%;border-collapse:collapse;margin:6px 0 16px;font-size:14px">' +
+      lignes.map(function (l) {
+        return '<tr><td style="padding:8px 0;border-top:1px solid #E2DDD2;color:#6E695F">' + escHtml_(l[0]) +
+               '</td><td style="padding:8px 0;border-top:1px solid #E2DDD2;color:#1D1C19;font-weight:bold;text-align:right">' + escHtml_(l[1]) + '</td></tr>';
+      }).join('') + '</table>' : '') +
+    '<a href="' + escHtml_(url) + '" style="display:inline-block;background:#1F6B57;color:#ffffff;text-decoration:none;font-weight:bold;font-size:15px;padding:13px 22px;border-radius:12px">' + escHtml_(bouton) + '</a>' +
+    (conseil ? '<p style="font-size:13px;line-height:1.5;color:#6E695F;margin:16px 0 0">' + escHtml_(conseil) + '</p>' : '') +
+    '</div><p style="text-align:center;font-size:12px;color:#9C978C;margin:12px 0 0">Email automatique · réglable dans Mes Locations › Réglages › Notifications</p></div>';
+  GmailApp.sendEmail(dest, '[Mes Locations] ' + objet, texte, { htmlBody: html, name: 'Mes Locations' });
+}
+
+function de_(mot) { return /^[aeiouyhé]/i.test(mot) ? 'd\'' : 'de '; }
+
+function euroTxt_(n) {
+  return (Number(n) || 0).toFixed(2).replace('.', ',').replace(/\B(?=(\d{3})+(?!\d))/g, ' ') + ' €';
+}
+
+function notifierLoyer_(P, id, periode, rappel) {
+  const L = LOGEMENTS[id];
+  const loc = locataire_(id);
+  const mp = moisDePeriode_(periode);
+  const ech = dateEcheance_(P, periode);
+  const tz = Session.getScriptTimeZone();
+  notifier_(P,
+    (rappel ? 'Rappel : loyer ' : 'Loyer ') + mp.mois + ' à valider — ' + L.libelle,
+    (rappel ? 'Le loyer ' : 'As-tu reçu le loyer ') + de_(mp.mois) + mp.mois + ' ' + mp.annee + (rappel ? ' n\'est toujours pas validé' : ' ?'),
+    [rappel
+      ? 'L\'échéance est passée et le paiement n\'a pas encore été validé. La quittance reste en attente.'
+      : 'C\'est le jour de l\'échéance. La quittance partira automatiquement dès que tu auras validé le paiement.',
+     'Vérifie ton compte bancaire, puis valide le paiement dans l\'application (montant et date de réception).'],
+    [['Logement', L.libelle], ['Locataire', (loc.civilite + ' ' + loc.prenom + ' ' + loc.nom).trim()],
+     ['Loyer attendu', euroTxt_(loc.loyer)], ['Échéance', Utilities.formatDate(ech, tz, 'dd/MM/yyyy')]],
+    'Valider le paiement', 'paiement/' + id + '/' + periode,
+    bool_(P[id + '.rappel_impaye']) ? 'Si rien n\'est validé, un rappel courtois part au locataire ' + P.rappel_impaye_jours + ' jours après l\'échéance.' : '');
+}
+
+function notifierBloquee_(P, id, periode) {
+  const L = LOGEMENTS[id];
+  const loc = locataire_(id);
+  const mp = moisDePeriode_(periode);
+  notifier_(P,
+    'Quittance ' + mp.mois + ' non envoyée — ' + L.libelle,
+    'La quittance ' + de_(mp.mois) + mp.mois + ' ' + mp.annee + ' n\'est pas partie',
+    ['Le paiement est validé, mais la quittance n\'a pas encore été envoyée au locataire.',
+     'Cause probable : l\'envoi automatique est désactivé pour ce logement, ou l\'adresse email du locataire est absente ou erronée.'],
+    [['Logement', L.libelle], ['Locataire', (loc.prenom + ' ' + loc.nom).trim()], ['Email du locataire', loc.email || '(vide)']],
+    'Envoyer la quittance', 'paiement/' + id + '/' + periode,
+    'Dans l\'application : ouvre le paiement et touche « Envoyer la quittance ».');
+}
+
+function notifierAttestation_(P, id) {
+  const L = LOGEMENTS[id];
+  const loc = locataire_(id);
+  const annee = new Date().getFullYear();
+  const env = parseDate_(P[id + '.assurance_envoyee']);
+  const rel = P[id + '.derniere_relance'] ? parseDate_(P[id + '.derniere_relance']) : null;
+  const tz = Session.getScriptTimeZone();
+  const lignes = [['Logement', L.libelle], ['Locataire', (loc.prenom + ' ' + loc.nom).trim()],
+                  ['Demande envoyée le', Utilities.formatDate(env, tz, 'dd/MM/yyyy')]];
+  if (rel) lignes.push(['Dernière relance', Utilities.formatDate(rel, tz, 'dd/MM/yyyy')]);
+  notifier_(P,
+    'Attestation ' + annee + ' à confirmer — ' + L.libelle,
+    'As-tu reçu l\'attestation d\'assurance ' + annee + ' ?',
+    ['La demande d\'attestation a été envoyée au locataire, mais sa réception n\'est pas encore confirmée.',
+     'Si tu l\'as reçue (par email ou courrier), confirme-le dans l\'application : les relances s\'arrêteront.'],
+    lignes, 'Confirmer la réception', 'attestation/' + id,
+    bool_(P.relance_active) ? 'Sans confirmation, une relance part automatiquement au locataire tous les ' + P.relance_jours + ' jours.' : '');
+}
+
+function envoyerRecap_(P, periode) {
+  const tz = Session.getScriptTimeZone();
+  const precedente = Utilities.formatDate(new Date(Number(periode.slice(0, 4)), Number(periode.slice(5, 7)) - 2, 1), tz, 'yyyy-MM');
+  const mp = moisDePeriode_(precedente);
+  const annee = periode.slice(0, 4);
+  const pays = lirePaiements_();
+  const lignes = [];
+  const aFaire = [];
+  let totalAnnee = 0;
+  pays.forEach(function (p) {
+    if (p.valide_le && p.periode.slice(0, 4) === annee) totalAnnee += Number(String(p.montant).replace(',', '.')) || 0;
+  });
+  Object.keys(LOGEMENTS).forEach(function (id) {
+    if (!bool_(P[id + '.quittance_active'])) return;
+    const L = LOGEMENTS[id];
+    const p = pays.filter(function (x) { return x.logement === id && x.periode === precedente; })[0];
+    lignes.push([L.libelle + ' — loyer ' + de_(mp.mois) + mp.mois,
+      p && p.valide_le ? euroTxt_(String(p.montant).replace(',', '.')) + (p.quittance_le ? ' · quittance envoyée' : ' · quittance NON envoyée') : 'non validé']);
+    if (!p || !p.valide_le) aFaire.push('Valider le loyer ' + de_(mp.mois) + mp.mois + ' (' + L.libelle + ').');
+    else if (!p.quittance_le) aFaire.push('Envoyer la quittance ' + de_(mp.mois) + mp.mois + ' (' + L.libelle + ').');
+  });
+  Object.keys(LOGEMENTS).forEach(function (id) {
+    if (bool_(P[id + '.assurance_active']) && String(P[id + '.assurance_envoyee'] || '').slice(0, 4) === annee &&
+        String(P[id + '.assurance_recue']) !== annee) {
+      aFaire.push('Confirmer la réception de l\'attestation d\'assurance ' + annee + ' (' + LOGEMENTS[id].libelle + ').');
+    }
+  });
+  if (P.derniere_erreur) aFaire.push('Vérifier la dernière erreur d\'envoi : ' + P.derniere_erreur);
+  lignes.push(['Encaissé en ' + annee + ' (paiements validés)', euroTxt_(totalAnnee)]);
+  notifier_(P,
+    'Récapitulatif ' + de_(mp.mois) + mp.mois + ' ' + mp.annee,
+    'Récapitulatif ' + de_(mp.mois) + mp.mois + ' ' + mp.annee,
+    aFaire.length ? ['À faire :'].concat(aFaire.map(function (t) { return '• ' + t; })) : ['Tout est à jour : aucune action en attente.'],
+    lignes, 'Ouvrir Mes Locations', aFaire.length ? 'accueil' : 'bilan', '');
+}
+
+// Compatibilité : ancienne fonction d'alerte texte
+function alerte_(P, sujet, texte) {
+  notifier_(P, sujet, sujet, [texte], [], 'Ouvrir l\'application', 'accueil', '');
 }
 
 // Force le mois et le jour de paiement sur la feuille quittance le temps de l'export
@@ -516,6 +707,14 @@ function executer_(req) {
         for (let i = 0; i < ids.length; i++) if (ids[i][0] === req.id) { sh.deleteRow(i + 2); break; }
       }
       return etat_();
+    }
+
+    case 'testNotification': {
+      const P = lireParams_();
+      if (!bool_(P.alertes_actives)) throw new Error('Les notifications sont désactivées (interrupteur général)');
+      const id = Object.keys(LOGEMENTS).filter(function (k) { return bool_(P[k + '.quittance_active']); })[0] || 'trianon';
+      notifierLoyer_(P, id, Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM'), false);
+      return { envoye: true };
     }
 
     case 'test': {

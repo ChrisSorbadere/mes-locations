@@ -1,7 +1,7 @@
 /* Mes Locations — PWA (vanilla JS) */
 'use strict';
 
-const VERSION = '1.1.1';
+const VERSION = '1.2.0';
 const MOIS = ['janvier', 'février', 'mars', 'avril', 'mai', 'juin', 'juillet', 'août', 'septembre', 'octobre', 'novembre', 'décembre'];
 const MOIS_COURT = ['janv.', 'févr.', 'mars', 'avr.', 'mai', 'juin', 'juil.', 'août', 'sept.', 'oct.', 'nov.', 'déc.'];
 const CATEGORIES = ['Taxe foncière', 'Assurance propriétaire (PNO)', 'Travaux & entretien', 'Charges de copropriété', 'Frais de gestion', 'Intérêts d\'emprunt', 'Autre'];
@@ -160,6 +160,7 @@ async function charger(silencieux) {
     if (!S.cfg.demo) ecrireLS(LS_CACHE, S.data);
     if (!S.dirty) S.draft = null;
     rendre();
+    traiterLien();
   } catch (e) {
     if (!silencieux || !S.data) toast(e.message, true);
     if (!S.data) rendreErreurConnexion(e.message);
@@ -703,8 +704,19 @@ function vueReglages() {
   h += `<p class="section-title">Emails</p><div class="card">
     ${inp('copie_cachee', 'Copie cachée de chaque envoi', 'email')}
     ${inp('signature', 'Signature')}
-    ${sw('alertes_actives', 'Alertes', 'Paiement non validé à l\'échéance, erreurs d\'envoi')}
-    <div style="margin-top:12px">${inp('email_alertes', 'Adresse des alertes', 'email')}</div>
+  </div>`;
+
+  h += `<p class="section-title">Notifications par email</p><div class="card">
+    ${sw('alertes_actives', 'Recevoir les notifications', 'Interrupteur général des emails envoyés à toi')}
+    <div style="margin-top:12px">${inp('email_alertes', 'Adresse de réception', 'email')}</div>
+    ${sw('notif_loyer', 'Loyer à valider', 'Le jour de l\'échéance, avec un bouton pour valider')}
+    <div style="margin-top:12px">${inp('notif_loyer_rappel_jours', 'Rappel si toujours pas validé après (jours, 0 = jamais)', 'number', 'min="0" max="30" inputmode="numeric" data-num="1"')}</div>
+    ${sw('notif_attestation', 'Attestation à confirmer', 'Te demande si l\'attestation d\'assurance est arrivée')}
+    <div style="margin-top:12px">${inp('notif_attestation_jours', 'Délai après la demande, puis entre deux emails (jours)', 'number', 'min="1" max="60" inputmode="numeric" data-num="1"')}</div>
+    ${sw('notif_quittance_bloquee', 'Quittance bloquée', 'Paiement validé mais quittance non envoyée')}
+    ${sw('recap_mensuel', 'Récapitulatif mensuel', 'Le 1er du mois : loyers du mois écoulé et actions en attente')}
+    <p class="hint" style="margin-top:12px">Les erreurs d'envoi sont toujours signalées (une fois par erreur).</p>
+    <div class="actions"><button class="btn ghost block" data-act="testNotif">Recevoir un exemple de notification</button></div>
   </div>`;
 
   h += `<p class="section-title">Modèles d'email</p>`;
@@ -749,7 +761,8 @@ async function sauverReglages() {
       if (S.draft[k] !== logement(id).email) emails[id] = S.draft[k];
     } else if (S.draft[k] !== P()[k]) valeurs[k] = S.draft[k];
   });
-  if (!(Number(S.draft.relance_jours) >= 1) || !(Number(S.draft.rappel_impaye_jours) >= 1)) return toast('Délai invalide', true);
+  if (!(Number(S.draft.relance_jours) >= 1) || !(Number(S.draft.rappel_impaye_jours) >= 1) ||
+      !(Number(S.draft.notif_loyer_rappel_jours) >= 0) || !(Number(S.draft.notif_attestation_jours) >= 1)) return toast('Délai invalide', true);
   const mails = [S.draft.copie_cachee, S.draft.email_alertes, ...logements().map((l) => S.draft['email:' + l.id]), ...logements().map((l) => S.draft[l.id + '.email2'])];
   if (mails.some((m) => m && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(m).trim()))) return toast('Une adresse email est invalide', true);
   S.dirty = false;
@@ -868,6 +881,11 @@ document.addEventListener('click', async (e) => {
     }
     case 'sauver': sauverReglages(); break;
     case 'annulerDraft': S.draft = null; S.dirty = false; rendre(); break;
+    case 'testNotif':
+      if (S.dirty) return toast('Enregistre d\'abord tes réglages', true);
+      chargement(true, 'Envoi de l\'exemple…');
+      try { await api('testNotification'); toast('Exemple envoyé à ' + (P().email_alertes || 'ton adresse')); } catch (err) { toast(err.message, true); } finally { chargement(false); }
+      break;
     case 'test':
       chargement(true, 'Envoi du test…');
       try { await api('test'); toast('Email de test envoyé'); } catch (err) { toast(err.message, true); } finally { chargement(false); }
@@ -933,7 +951,8 @@ function initDemo() {
   const params = {
     copie_cachee: 'chris.soulas@gmail.com', signature: 'Christophe SOULAS', email_alertes: 'chris.soulas@gmail.com', alertes_actives: true,
     quittance_jour: 10, quittance_heure: 12, envoi_a_la_validation: true, assurance_jour: 4, assurance_mois: 1, relance_active: true, relance_jours: 15,
-    rappel_impaye_jours: 5,
+    rappel_impaye_jours: 5, notif_loyer: true, notif_loyer_rappel_jours: 3, notif_attestation: true, notif_attestation_jours: 7,
+    notif_quittance_bloquee: true, recap_mensuel: true, app_url: 'https://chrissorbadere.github.io/Loyers/index.html',
     objet_quittance: 'Quittance de loyer - {mois} {annee} - {adresse}',
     corps_quittance: 'Bonjour {civilite} {nom},\n\nVoici la quittance de loyer du mois de {mois} {annee} pour votre location du :\n\n{adresse}\n{commune}\n\nVous souhaitant bonne réception.\nBien cordialement.\n{signature}',
     objet_rappel_loyer: 'Rappel : loyer de {mois} {annee} - {adresse}',
@@ -1020,10 +1039,40 @@ async function demoApi(act, p) {
     case 'supprimerDepense': DEMO.depenses = DEMO.depenses.filter((d) => d.id !== p.id); break;
     case 'effacerErreur': DEMO.params.derniere_erreur = ''; break;
     case 'apercu': throw new Error('Aperçu PDF indisponible en mode démo');
-    case 'test': return { envoye: true };
+    case 'test': case 'testNotification': return { envoye: true };
   }
   return demoEtat();
 }
+
+/* ================= Liens profonds (depuis les emails) ================= */
+// #paiement/<logement>/<aaaa-mm> · #attestation/<logement> · #accueil · #paiements · #bilan · #historique · #reglages
+let lienEnAttente = null;
+function lireLien() {
+  const h = decodeURIComponent(location.hash.replace(/^#/, ''));
+  if (!h) return;
+  lienEnAttente = h;
+  try { history.replaceState(null, '', location.pathname + location.search); } catch { /* ignoré */ }
+  traiterLien();
+}
+async function traiterLien() {
+  if (!lienEnAttente || !S.cfg || !S.data) return;
+  const [vue, id, per] = lienEnAttente.split('/');
+  lienEnAttente = null;
+  const valide = (x) => logements().some((l) => l.id === x);
+  if (vue === 'paiement' && valide(id) && /^\d{4}-\d{2}$/.test(per || '')) {
+    S.tab = 'paiements'; S.logPaiements = id; rendre(); ouvrirPaiement(id, per);
+  } else if (vue === 'attestation' && valide(id)) {
+    S.tab = 'accueil'; rendre();
+    const y = maintenant().getFullYear();
+    if (String(P()[id + '.assurance_recue']) === String(y)) return toast('Attestation ' + y + ' déjà confirmée');
+    if (await confirmer('Attestation ' + y + ' reçue ?', logement(id).libelle + ' : les relances automatiques s\'arrêteront.', 'Confirmer')) {
+      action('Enregistrement…', 'assuranceRecue', { logement: id, recue: true }, 'Attestation marquée reçue');
+    }
+  } else if (['accueil', 'paiements', 'bilan', 'historique', 'reglages'].includes(vue)) {
+    changerOnglet(vue);
+  }
+}
+window.addEventListener('hashchange', lireLien);
 
 /* ================= Démarrage ================= */
 appliquerTheme(theme());
@@ -1033,4 +1082,5 @@ if ('serviceWorker' in navigator && location.protocol === 'https:') {
 if (S.cfg && !S.cfg.demo) { S.data = lireLS(LS_CACHE); if (S.data) normaliser(S.data); }
 if (S.cfg?.demo) S.cfg = null; // la démo ne persiste pas
 rendre();
+lireLien();
 if (S.cfg) charger(true);
