@@ -5,7 +5,7 @@ self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(FICHIERS)).then(() => self.skipWaiting()));
 });
 self.addEventListener('activate', (e) => {
-  e.waitUntil(caches.keys().then((ks) => Promise.all(ks.filter((k) => k !== CACHE).map((k) => caches.delete(k)))).then(() => self.clients.claim()));
+  e.waitUntil(caches.keys().then((ks) => Promise.all(ks.filter((k) => k.startsWith('mes-locations-') && k !== CACHE).map((k) => caches.delete(k)))).then(() => self.clients.claim()));
 });
 // Réseau d'abord pour l'app (mises à jour immédiates), cache en secours hors ligne.
 self.addEventListener('fetch', (e) => {
@@ -19,3 +19,4 @@ self.addEventListener('fetch', (e) => {
     }).catch(() => caches.match(e.request).then((r) => r || caches.match('index.html')))
   );
 });
+// Ne supprime que ses propres caches : toutes les applis partagent chrissorbadere.github.io.
