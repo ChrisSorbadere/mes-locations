@@ -1017,6 +1017,26 @@ function supprimerReleve_(relId) {
   feuilleReleves_().deleteRow(r.ligne);
 }
 
+// À exécuter UNE FOIS depuis l'éditeur : corrige le choix du locataire actuel de la Maison (onglet Principale).
+// Avant : M6 passait par l'onglet Moteur (formule cassée en I5, fin de bail de LEURS = date du jour)
+// et K6/L6 utilisaient une RECHERCHEV approximative sur une liste non triée.
+// Après : M6 prend le locataire dont le bail a commencé et n'est pas terminé (le plus récent s'il y en a plusieurs),
+// K6/L6 cherchent sa civilité et son prénom en correspondance exacte.
+function corrigerLocataireMaison() {
+  const p = principale_();
+  p.getRange('M6').setFormula('=IFERROR(INDEX(SORT(FILTER({A6:A18,D6:D18},A6:A18<>"",D6:D18<>"",D6:D18<=TODAY(),(E6:E18="")+(E6:E18>=TODAY())),2,FALSE),1,1),"")');
+  p.getRange('K6').setFormula('=IFERROR(VLOOKUP(M6,$A$6:$C$18,3,FALSE),"")');
+  p.getRange('L6').setFormula('=IFERROR(VLOOKUP(M6,$A$6:$B$18,2,FALSE),"")');
+  // Même correction de prudence pour le Trianon (recherche exacte)
+  p.getRange('K21').setFormula('=IFERROR(VLOOKUP(M21,$A$22:$C$33,3,FALSE),"")');
+  p.getRange('L21').setFormula('=IFERROR(VLOOKUP(M21,$A$22:$B$33,2,FALSE),"")');
+  SpreadsheetApp.flush();
+  const msg = 'Locataire actuel de la Maison : ' + [p.getRange('K6').getDisplayValue(), p.getRange('L6').getDisplayValue(), p.getRange('M6').getDisplayValue()].join(' ').trim() +
+    '\n(Le locataire retenu est celui dont la date de début (col. D) est passée et dont la date de fin (col. E) est vide ou à venir.)';
+  Logger.log(msg);
+  try { SpreadsheetApp.getUi().alert(msg); } catch (e) { /* éditeur */ }
+}
+
 // À exécuter UNE FOIS depuis l'éditeur : passe la Maison en gestion par agence
 // et importe les relevés d'août, septembre et octobre 2026 (sans les PDF, à joindre ensuite depuis l'appli).
 function importerRelevesAgence2026() {
