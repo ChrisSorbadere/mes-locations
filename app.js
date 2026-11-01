@@ -1,10 +1,10 @@
 /* Mes Locations — PWA (vanilla JS) */
 'use strict';
 
-const VERSION = '1.2.0';
+const VERSION = '1.3.0';
 const MOIS = ['janvier', 'février', 'mars', 'avril', 'mai', 'juin', 'juillet', 'août', 'septembre', 'octobre', 'novembre', 'décembre'];
 const MOIS_COURT = ['janv.', 'févr.', 'mars', 'avr.', 'mai', 'juin', 'juil.', 'août', 'sept.', 'oct.', 'nov.', 'déc.'];
-const CATEGORIES = ['Taxe foncière', 'Assurance propriétaire (PNO)', 'Travaux & entretien', 'Charges de copropriété', 'Frais de gestion', 'Intérêts d\'emprunt', 'Autre'];
+const CATEGORIES = ['Taxe foncière', 'Assurance propriétaire (PNO)', 'Travaux & entretien', 'Charges de copropriété', 'Honoraires d\'agence', 'Assurance loyers impayés (GLI)', 'Frais de gestion', 'Intérêts d\'emprunt', 'Autre'];
 const LS_CFG = 'ml_cfg', LS_CACHE = 'ml_cache', LS_THEME = 'ml_theme';
 
 const S = {
@@ -45,6 +45,9 @@ const logements = () => S.data.logements;
 const logement = (id) => logements().find((l) => l.id === id);
 const paiement = (id, per) => S.data.paiements.find((p) => p.logement === id && p.periode === per);
 const couleur = (id) => `var(--c-${id === 'maison' || id === 'trianon' ? id : 'commun'})`;
+const estAgence = (id) => String(P()[id + '.gestion'] || '').toLowerCase() === 'agence';
+const nomAgence = (id) => P()[id + '.agence_nom'] || 'l\'agence';
+const releves = (id) => (S.data.releves || []).filter((r) => !id || r.logement === id).sort((x, y) => y.date.localeCompare(x.date));
 const nomLoc = (l) => [l.civilite, l.prenom, l.nom].join(' ').trim() || 'Aucun locataire';
 
 function dateEcheance(per) {
@@ -59,6 +62,12 @@ function statutQuittance(l, per) {
   const actif = P()[l.id + '.quittance_active'];
   const courant = per === periodeCourante();
   const ech = dateEcheance(per);
+  if (estAgence(l.id) || p?.quittance_le === 'agence') {
+    if (p?.valide_le) return { cls: 'ok', pill: 'Encaissé', titre: 'Encaissé via l\'agence', detail: 'relevé du ' + fmtJour(parseIso(p.date_reception)), p };
+    if (courant && maintenant().getDate() >= 22) return { cls: 'warn', pill: 'Relevé à saisir', titre: 'Relevé d\'agence à saisir', detail: 'normalement reçu vers le 20 du mois', p };
+    if (courant) return { cls: 'idle', pill: 'En attente', titre: 'En attente du relevé d\'agence', detail: 'vers le 20 ' + moisDe(per), p };
+    return { cls: 'idle', pill: 'Non saisi', titre: 'Aucun relevé saisi', detail: '', p };
+  }
   if (p?.quittance_le) return { cls: 'ok', pill: 'Envoyée', titre: 'Quittance envoyée', detail: 'le ' + fmtJour(parseIso(p.quittance_le)), p };
   if (p?.valide_le) {
     if (!actif) return { cls: 'info', pill: 'Payé', titre: 'Paiement validé', detail: 'Envoi automatique désactivé', p };
@@ -105,7 +114,8 @@ function encaissements() {
     if (h.trianon > 0) m.set('trianon|' + per, { logement: 'trianon', periode: per, montant: h.trianon, source: 'historique' });
   });
   S.data.paiements.filter((p) => p.valide_le).forEach((p) => {
-    m.set(p.logement + '|' + p.periode, { logement: p.logement, periode: p.periode, montant: num(p.montant), date_reception: p.date_reception, source: 'paiement' });
+    m.set(p.logement + '|' + p.periode, { logement: p.logement, periode: p.periode, montant: num(p.montant), date_reception: p.date_reception,
+      source: p.quittance_le === 'agence' ? 'agence' : 'paiement', charges: p.charges !== undefined && p.charges !== '' ? num(p.charges) : null });
   });
   return [...m.values()];
 }
@@ -131,7 +141,7 @@ function bilan(annee, filtre) {
   const parCat = {};
   dep.forEach((d) => { parCat[d.categorie] = (parCat[d.categorie] || 0) + d.montant; });
   // Charges récupérables estimées (charges actuelles × nombre de mois encaissés)
-  const chargesEstim = enc.reduce((t, e) => t + (logement(e.logement)?.charges || 0), 0);
+  const chargesEstim = enc.reduce((t, e) => t + (e.charges !== null && e.charges !== undefined ? e.charges : (logement(e.logement)?.charges || 0)), 0);
   return { enc, dep, mois, totalIn, totalOut, net: totalIn - totalOut, nbMois: enc.length,
            ponctualite: avecDate.length ? Math.round(100 * aLHeure / avecDate.length) : null, nbPonct: avecDate.length, parCat, chargesEstim };
 }
@@ -148,6 +158,7 @@ async function api(action, payload = {}) {
 
 function normaliser(d) {
   d.depenses = d.depenses || [];
+  d.releves = d.releves || [];
   d.historique = d.historique || [];
   return d;
 }
@@ -263,6 +274,15 @@ function tachesAFaire() {
     }
   });
   logements().forEach((l) => {
+    if (!estAgence(l.id)) return;
+    const p = paiement(l.id, per);
+    if (!p?.valide_le && n.getDate() >= 22) {
+      t.push({ cls: 'warn', ico: '▤', log: l.id, titre: `Relevé d'agence ${de(moisDe(per))}${moisDe(per)} — ${l.libelle}`,
+        detail: `${nomAgence(l.id)} envoie son compte rendu de gestion vers le 20`, actions: [['primary', 'Saisir le relevé', 'ajouterReleve', per]] });
+    }
+  });
+  logements().forEach((l) => {
+    if (estAgence(l.id)) return;
     const a = statutAssurance(l);
     if (a.cls === 'warn') {
       t.push({ cls: 'warn', ico: '☂', log: l.id, titre: `${a.titre} — ${l.libelle}`, detail: a.detail,
@@ -302,11 +322,24 @@ function vueAccueil() {
   }
 
   // Logements
-  const actifs = logements().filter((l) => P()[l.id + '.quittance_active'] || P()[l.id + '.assurance_active'] || paiement(l.id, per));
+  const actifs = logements().filter((l) => estAgence(l.id) || P()[l.id + '.quittance_active'] || P()[l.id + '.assurance_active'] || paiement(l.id, per));
   const inactifs = logements().filter((l) => !actifs.includes(l));
   h += `<p class="section-title">Mes logements</p>`;
   actifs.forEach((l) => {
     const s = statutQuittance(l, per);
+    if (estAgence(l.id)) {
+      const r = releves(l.id)[0];
+      h += `<article class="card log" style="--lc:${couleur(l.id)}" data-act="voirLogement" data-log="${l.id}">
+        <div class="card-head">
+          <div><h2>${esc(l.libelle)}</h2><p class="sub">Géré par ${esc(nomAgence(l.id))}</p></div>
+          <span class="pill ${s.cls}">${esc(s.pill)}</span>
+        </div>
+        <p class="amount">${r ? euro(r.net) : '—'} <small>· ${r ? 'net viré le ' + esc(fmtJour(parseIso(r.date))) : 'aucun relevé'}</small></p>
+        <div class="mini-status ${s.cls}"><i class="dot"></i><span><b>${esc(s.titre)}</b>${s.detail ? ' · ' + esc(s.detail) : ''}</span></div>
+        ${r ? `<div class="mini-status idle"><i class="dot"></i><span>Dernier relevé : ${euro(r.loyers + r.provisions)} encaissés − ${euro(r.frais)} de frais</span></div>` : ''}
+      </article>`;
+      return;
+    }
     const a = statutAssurance(l);
     const montant = s.p?.montant ? num(s.p.montant) : l.loyer;
     h += `<article class="card log" style="--lc:${couleur(l.id)}" data-act="paiement" data-log="${l.id}" data-per="${per}">
@@ -349,7 +382,18 @@ function vuePaiements() {
   let h = `<div class="segmented">${logements().map((x) => `<button data-act="logPaiements" data-log="${x.id}" class="${x.id === l.id ? 'on' : ''}"><span class="log-dot" style="--lc:${couleur(x.id)}"></span>${esc(x.libelle)}</button>`).join('')}</div>`;
   h += `<div class="card"><div class="card-head"><div><p class="sub">Encaissé en ${annee}</p><p class="amount" style="margin-top:4px">${euro(b.totalIn)}</p></div>
         <span class="pill info">${b.nbMois} mois</span></div>
-        <p class="sub">Loyer attendu : ${euro(l.loyer)}${l.charges ? ' dont ' + euro(l.charges) + ' de charges' : ''}</p></div>`;
+        <p class="sub">${estAgence(l.id) ? 'Géré par ' + esc(nomAgence(l.id)) + ' · montants bruts encaissés par l\'agence' : 'Loyer attendu : ' + euro(l.loyer) + (l.charges ? ' dont ' + euro(l.charges) + ' de charges' : '')}</p></div>`;
+  if (estAgence(l.id)) {
+    const rs = releves(l.id);
+    h += `<p class="section-title">Relevés de l'agence</p><div class="list">` + (rs.length ? rs.map((r) =>
+      `<button class="row" data-act="voirReleve" data-v="${esc(r.id)}">
+        <div class="ico st-info">▤</div>
+        <div class="grow"><div class="title">Relevé du ${esc(fmtJour(parseIso(r.date)))} ${esc(r.date.slice(0, 4))}</div>
+        <div class="meta">${esc(r.periodes.split(', ').map(labelPeriode).join(' + '))} · ${euro(r.loyers + r.provisions)} − ${euro(r.frais)}${r.pdf ? ' · PDF' : ' · sans PDF'}</div></div>
+        <b>${euro(r.net)}</b></button>`).join('') : '<p class="empty">Aucun relevé</p>') + `</div>
+      <div class="actions"><button class="btn primary block" data-act="ajouterReleve" data-log="${l.id}" data-per="${cur}">+ Ajouter un relevé</button></div>
+      <p class="section-title">Loyers par mois</p>`;
+  }
   h += `<div class="list">` + periodes.map((per) => {
     const s = statutQuittance(l, per);
     const hist = !s.p && encaissements().find((e) => e.logement === l.id && e.periode === per);
@@ -369,6 +413,22 @@ function ouvrirPaiement(id, per) {
   const l = logement(id);
   const p = paiement(id, per);
   const titre = 'Loyer ' + de(moisDe(per)) + labelPeriode(per);
+  if (estAgence(id) || p?.quittance_le === 'agence') {
+    if (!p?.valide_le) return ouvrirReleve(null, id, per);
+    const relId = (String(p.remarque).match(/\[(R\w+)\]/) || [])[1];
+    ouvrirSheet(`<h3>${esc(cap(titre))}</h3><p class="sub"><span class="log-dot" style="--lc:${couleur(id)}"></span>${esc(l.libelle)} · encaissé par ${esc(nomAgence(id))}</p>
+      <div class="card" style="padding:4px 16px">
+        <div class="line-item"><span class="label">Montant encaissé</span><span class="value">${euro(num(p.montant))}</span></div>
+        ${p.charges ? `<div class="line-item"><span class="label">dont provisions/charges</span><span class="value">${euro(num(p.charges))}</span></div>` : ''}
+        <div class="line-item"><span class="label">Relevé du</span><span class="value">${esc(fmtJour(parseIso(p.date_reception)))}</span></div>
+        <div class="line-item"><span class="label">Détail</span><span class="value">${esc(String(p.remarque).replace(/\s*\[R\w+\]/, ''))}</span></div>
+      </div>
+      <div class="actions">
+        ${p.pdf && p.pdf !== '#' ? `<a class="btn ghost grow" href="${esc(p.pdf)}" target="_blank" rel="noopener">Ouvrir le relevé PDF</a>` : ''}
+        ${relId ? `<button class="btn ghost grow" data-act="voirReleve" data-v="${esc(relId)}">Voir le relevé</button>` : ''}
+      </div>`);
+    return;
+  }
   if (!p?.valide_le) {
     const echPassee = dateEcheance(per) <= maintenant();
     const envoyerDefaut = P()[id + '.quittance_active'] && P().envoi_a_la_validation && echPassee;
@@ -424,6 +484,96 @@ async function payeRapide(id, per) {
     { logement: id, periode: per, montant: l.loyer.toFixed(2), date: isoJour(maintenant()), remarque: '', envoyer },
     envoyer ? 'Payé · quittance envoyée' : 'Loyer validé',
     envoyer ? null : { label: 'Annuler', fn: () => action('Annulation…', 'annulerPaiement', { logement: id, periode: per }, 'Validation annulée') });
+}
+
+/* ================= Relevés d'agence ================= */
+function lirePdf(fichier) {
+  return new Promise((resolve, reject) => {
+    if (!fichier) return resolve(null);
+    if (fichier.type && fichier.type !== 'application/pdf') return reject(new Error('Choisis un fichier PDF'));
+    if (fichier.size > 8 * 1024 * 1024) return reject(new Error('PDF trop volumineux (8 Mo maximum)'));
+    const lr = new FileReader();
+    lr.onload = () => resolve({ nom: fichier.name, base64: String(lr.result).split(',')[1] });
+    lr.onerror = () => reject(new Error('Lecture du PDF impossible'));
+    lr.readAsDataURL(fichier);
+  });
+}
+
+function ouvrirReleve(r, id, per) {
+  if (r) {
+    ouvrirSheet(`<h3>Relevé du ${esc(fmtJour(parseIso(r.date)))} ${esc(r.date.slice(0, 4))}</h3>
+      <p class="sub"><span class="log-dot" style="--lc:${couleur(r.logement)}"></span>${esc(logement(r.logement)?.libelle || r.logement)} · ${esc(nomAgence(r.logement))}</p>
+      <div class="card" style="padding:4px 16px">
+        <div class="line-item"><span class="label">Période(s)</span><span class="value">${esc(r.periodes.split(', ').map(labelPeriode).join(' + '))}</span></div>
+        <div class="line-item"><span class="label">Loyers</span><span class="value">${euro(r.loyers)}</span></div>
+        <div class="line-item"><span class="label">Provisions / charges</span><span class="value">${euro(r.provisions)}</span></div>
+        <div class="line-item"><span class="label">Frais déduits</span><span class="value">− ${euro(r.frais)}</span></div>
+        <div class="line-item"><span class="label"><b>Net viré</b></span><span class="value">${euro(r.net)}</span></div>
+        ${r.remarque ? `<div class="line-item"><span class="label">Remarque</span><span class="value">${esc(r.remarque)}</span></div>` : ''}
+      </div>
+      <p class="hint">Les frais sont enregistrés comme dépenses (onglet Bilan) et les loyers comme encaissements.</p>
+      <div class="actions">
+        ${r.pdf ? `<a class="btn ghost grow" href="${esc(r.pdf)}" target="_blank" rel="noopener">Ouvrir le PDF</a>` : ''}
+        <label class="btn ${r.pdf ? 'ghost' : 'primary'} grow" style="cursor:pointer">${r.pdf ? 'Remplacer le PDF' : 'Joindre le PDF'}
+          <input type="file" accept="application/pdf" id="rPdf" hidden></label>
+        <button class="btn danger block" id="rSuppr">Supprimer ce relevé</button>
+      </div>`);
+    $('#rPdf').onchange = async (e) => {
+      try {
+        const pdf = await lirePdf(e.target.files[0]);
+        if (pdf) action('Envoi du PDF…', 'joindrePdfReleve', { id: r.id, pdf }, 'PDF archivé dans Drive');
+      } catch (err) { toast(err.message, true); }
+    };
+    $('#rSuppr').onclick = async () => {
+      if (!await confirmer('Supprimer ce relevé ?', 'Les loyers et les frais qu\'il a enregistrés seront aussi supprimés.', 'Supprimer', true)) return;
+      action('Suppression…', 'supprimerReleve', { id: r.id }, 'Relevé supprimé');
+    };
+    return;
+  }
+  // Nouveau relevé, pré-rempli avec le dernier
+  const der = releves(id)[0];
+  const derPai = der && S.data.paiements.find((p) => p.logement === id && String(p.remarque).includes('[' + der.id + ']') && p.periode === der.periodes.split(', ').slice(-1)[0]);
+  const fraisDer = der ? (S.data.depenses || []).filter((d) => d.id.startsWith(der.id + '-')) : [];
+  const fGestion = fraisDer.find((d) => /gestion/i.test(d.libelle));
+  const fGli = fraisDer.find((d) => /GLI/.test(d.categorie));
+  const v = (x) => x ? String(Number(x).toFixed(2)).replace('.', ',') : '';
+  ouvrirSheet(`<h3>Nouveau relevé d'agence</h3><p class="sub">${esc(logement(id).libelle)} · reporte les montants du compte rendu de gestion.</p>
+    <div class="grid2">
+      <label class="field"><span>Date du relevé</span><input class="input" type="date" id="rDate" value="${isoJour(maintenant())}"></label>
+      <label class="field"><span>Mois du loyer</span><input class="input" type="month" id="rPer" value="${esc(per || periodeCourante())}"></label>
+      <label class="field"><span>Loyer (€)</span><input class="input rCalc" id="rLoyer" inputmode="decimal" value="${derPai ? v(num(derPai.montant) - num(derPai.charges)) : ''}"></label>
+      <label class="field"><span>Provisions / charges (€)</span><input class="input rCalc" id="rProv" inputmode="decimal" value="${derPai ? v(derPai.charges) : ''}"></label>
+      <label class="field"><span>Honoraires de gestion TTC (€)</span><input class="input rCalc" id="rGest" inputmode="decimal" value="${fGestion ? v(fGestion.montant) : ''}"></label>
+      <label class="field"><span>Cotisation GLI (€)</span><input class="input rCalc" id="rGli" inputmode="decimal" value="${fGli ? v(fGli.montant) : ''}"></label>
+      <label class="field"><span>Autres frais (€)</span><input class="input rCalc" id="rAutre" inputmode="decimal" placeholder="0"></label>
+      <label class="field"><span>Libellé autres frais</span><input class="input" id="rAutreLib" placeholder="ex. travaux"></label>
+    </div>
+    <div class="card" style="padding:4px 16px"><div class="line-item"><span class="label"><b>Net viré calculé</b></span><span class="value" id="rNet">—</span></div></div>
+    <label class="field"><span>PDF du relevé (facultatif)</span><input class="input" type="file" accept="application/pdf" id="rFichier"></label>
+    <label class="field"><span>Remarque (facultatif)</span><input class="input" id="rRem"></label>
+    <button class="btn primary block" id="rOk">Enregistrer le relevé</button>`);
+  const calc = () => {
+    const net = num($('#rLoyer').value) + num($('#rProv').value) - num($('#rGest').value) - num($('#rGli').value) - num($('#rAutre').value);
+    $('#rNet').textContent = euro(net);
+    return net;
+  };
+  document.querySelectorAll('.rCalc').forEach((i) => i.addEventListener('input', calc));
+  calc();
+  $('#rOk').onclick = async () => {
+    const loyer = num($('#rLoyer').value);
+    if (!(loyer > 0)) return toast('Loyer invalide', true);
+    if (!$('#rDate').value || !/^\d{4}-\d{2}$/.test($('#rPer').value)) return toast('Date ou mois manquant', true);
+    let pdf = null;
+    try { pdf = await lirePdf($('#rFichier').files[0]); } catch (err) { return toast(err.message, true); }
+    const frais = [];
+    if (num($('#rGest').value)) frais.push({ categorie: 'Honoraires d\'agence', libelle: 'Honoraires de gestion', montant: num($('#rGest').value).toFixed(2) });
+    if (num($('#rGli').value)) frais.push({ categorie: 'Assurance loyers impayés (GLI)', libelle: 'Cotisation garantie des loyers impayés', montant: num($('#rGli').value).toFixed(2) });
+    if (num($('#rAutre').value)) frais.push({ categorie: 'Autre', libelle: $('#rAutreLib').value.trim() || 'Autres frais', montant: num($('#rAutre').value).toFixed(2) });
+    action(pdf ? 'Enregistrement et archivage du PDF…' : 'Enregistrement…', 'ajouterReleve', {
+      logement: id, date: $('#rDate').value, net: calc().toFixed(2), remarque: $('#rRem').value.trim(), pdf,
+      lignes: [{ periode: $('#rPer').value, loyer: loyer.toFixed(2), provisions: num($('#rProv').value).toFixed(2) }], frais
+    }, 'Relevé enregistré');
+  };
 }
 
 /* ================= Bilan ================= */
@@ -669,8 +819,17 @@ function vueReglages() {
   h += `<p class="section-title">Logements</p>`;
   logements().forEach((l) => {
     const recue = String(P()[l.id + '.assurance_recue']) === String(y);
-    h += `<details class="card log" style="--lc:${couleur(l.id)}"><summary><div><h2>${esc(l.libelle)}</h2><p class="sub">${esc([l.prenom, l.nom].join(' ').trim())}</p></div></summary>
-      <div style="margin-bottom:10px">
+    const ag = String(S.draft[l.id + '.gestion'] || '').toLowerCase() === 'agence';
+    h += `<details class="card log" style="--lc:${couleur(l.id)}"${S.ouvert === l.id ? ' open' : ''}><summary><div><h2>${esc(l.libelle)}</h2><p class="sub">${ag ? 'Géré par ' + esc(S.draft[l.id + '.agence_nom'] || 'une agence') : esc([l.prenom, l.nom].join(' ').trim())}</p></div></summary>
+      <p class="field" style="margin-bottom:6px"><span style="display:block;font-size:13.5px;color:var(--muted);font-weight:600;margin:0 0 6px 2px">Mode de gestion</span></p>
+      <div class="segmented">
+        <button data-act="gestion" data-log="${l.id}" data-v="directe" class="${ag ? '' : 'on'}">Directe</button>
+        <button data-act="gestion" data-log="${l.id}" data-v="agence" class="${ag ? 'on' : ''}">Par une agence</button>
+      </div>
+      ${ag ? `${inp(l.id + '.agence_nom', 'Nom de l\'agence')}
+        <p class="hint">L'agence encaisse le loyer, envoie les quittances et gère l'assurance : l'application n'envoie rien au locataire. Saisis chaque mois le compte rendu de gestion dans Paiements.</p>
+    </details>` : ''}
+      <div style="margin-bottom:10px${ag ? ';display:none' : ''}">
         ${sw(l.id + '.quittance_active', 'Envoi des quittances', 'Automatique chaque mois, après validation du paiement')}
         ${sw(l.id + '.rappel_impaye', 'Rappel si loyer impayé', 'Email courtois au locataire ' + (S.draft.rappel_impaye_jours || 5) + ' j après l\'échéance')}
         ${sw(l.id + '.assurance_active', 'Demande d\'attestation d\'assurance', 'Une fois par an, avec relances')}
@@ -689,6 +848,7 @@ function vueReglages() {
         <button class="btn ghost grow" data-act="envoyerA" data-log="${l.id}" data-relance="1">Relancer</button>
       </div>
     </details>`;
+    if (ag) h = h.slice(0, h.lastIndexOf('<div style="margin-bottom:10px;display:none">'));
   });
 
   h += `<p class="section-title">Calendrier</p><div class="card">
@@ -828,6 +988,15 @@ document.addEventListener('click', async (e) => {
     case 'bilanAnnee': S.bilanAnnee = t.dataset.v; rendre(); break;
     case 'bilanLog': S.bilanLog = t.dataset.v; rendre(); break;
     case 'ajouterDepense': ouvrirDepense(null); break;
+    case 'voirLogement': S.logPaiements = log; changerOnglet('paiements'); break;
+    case 'voirReleve': { const r = (S.data.releves || []).find((x) => x.id === t.dataset.v); if (r) ouvrirReleve(r); break; }
+    case 'ajouterReleve': ouvrirReleve(null, log, per); break;
+    case 'gestion':
+      if (!S.draft) return;
+      S.draft[log + '.gestion'] = t.dataset.v;
+      if (t.dataset.v === 'agence') { S.draft[log + '.quittance_active'] = false; S.draft[log + '.assurance_active'] = false; S.draft[log + '.rappel_impaye'] = false; }
+      S.ouvert = log; S.dirty = true; rendre();
+      break;
     case 'voirDepense': ouvrirDepense(S.data.depenses.find((d) => d.id === t.dataset.v)); break;
     case 'exportCsv': exporterCsv(); break;
     case 'theme': ecrireLS(LS_THEME, t.dataset.v); appliquerTheme(t.dataset.v); rendre(); break;
@@ -961,6 +1130,8 @@ function initDemo() {
     corps_assurance: 'Bonjour {civilite} {nom},\n\nJe vous prie de bien vouloir me renvoyer l\'attestation d\'assurance pour la location du :\n\n{adresse}\n{commune}\n\nBien cordialement.\n{signature}',
     objet_relance: 'Rappel : attestation d\'assurance {annee} - {adresse}',
     corps_relance: 'Bonjour {civilite} {nom},\n\nSauf erreur de ma part, je n\'ai pas encore reçu votre attestation d\'assurance {annee}.\n\nBien cordialement.\n{signature}',
+    'maison.gestion': 'agence', 'maison.agence_nom': 'Agence (Villenave-d\'Ornon)',
+    'trianon.gestion': 'directe', 'trianon.agence_nom': '',
     'maison.quittance_active': false, 'maison.assurance_active': false, 'maison.rappel_impaye': false, 'maison.email2': '', 'maison.adresse': '5 route du chemin Large', 'maison.commune': 'à St Sulpice et Cameyrac.',
     'maison.assurance_envoyee': '', 'maison.derniere_relance': '', 'maison.assurance_recue': '', 'maison.alerte_periode': '', 'maison.rappel_periode': '',
     'trianon.quittance_active': true, 'trianon.assurance_active': true, 'trianon.rappel_impaye': true, 'trianon.email2': '', 'trianon.adresse': '5 Bis route du chemin Large', 'trianon.commune': 'à St Sulpice et Cameyrac.',
@@ -987,17 +1158,38 @@ function initDemo() {
     { id: 'd4', date: (y - 1) + '-09-15', logement: 'commun', categorie: 'Taxe foncière', libelle: 'Taxe foncière ' + (y - 1), montant: 1198, remarque: '' }
   ];
   DEMO = {
-    params, paiements, journal, depenses, historique,
+    params, paiements, journal, depenses, historique, releves: [],
     logements: [
       { id: 'maison', libelle: 'Maison', civilite: 'Mme', prenom: 'Emilie', nom: 'LEURS', email: 'locataire.maison@example.com', loyer: 0, charges: 0 },
       { id: 'trianon', libelle: 'Trianon', civilite: 'M.', prenom: 'Gilles', nom: 'SUDRE', email: 'locataire.trianon@example.com', loyer: 419.71, charges: 5.51 }
     ]
   };
 }
+function demoReleve(p) {
+  if (DEMO.releves.some((r) => r.logement === p.logement && r.date === p.date)) throw new Error('Un relevé du ' + p.date + ' existe déjà pour ce logement');
+  const id = 'R' + Math.random().toString(16).slice(2, 9);
+  const dd = p.date.split('-').reverse().join('/');
+  let loyers = 0, prov = 0, frais = 0;
+  p.lignes.forEach((l) => { loyers += Number(l.loyer); prov += Number(l.provisions || 0); });
+  p.frais.forEach((f) => { frais += Number(f.montant); });
+  DEMO.releves.push({ id, logement: p.logement, date: p.date, periodes: p.lignes.map((l) => l.periode).join(', '), loyers, provisions: prov, frais, net: Math.round((loyers + prov - frais) * 100) / 100, pdf: p.pdf ? '#' : '', remarque: p.remarque || '' });
+  p.lignes.forEach((l) => {
+    DEMO.paiements = DEMO.paiements.filter((x) => !(x.logement === p.logement && x.periode === l.periode));
+    DEMO.paiements.push({ logement: p.logement, periode: l.periode, montant: (Number(l.loyer) + Number(l.provisions || 0)).toFixed(2), date_reception: p.date, valide_le: p.date + ' 10:00', quittance_le: 'agence', pdf: p.pdf ? '#' : '', remarque: 'Relevé agence du ' + dd + ' [' + id + ']', charges: String(l.provisions || 0) });
+  });
+  p.frais.forEach((f, i) => DEMO.depenses.push({ id: id + '-' + (i + 1), date: f.date || p.date, logement: p.logement, categorie: f.categorie, libelle: f.libelle, montant: Number(f.montant), remarque: 'Relevé agence du ' + dd }));
+}
+function demoSeedAgence() {
+  const gli = { categorie: 'Assurance loyers impayés (GLI)', libelle: 'Cotisation garantie des loyers impayés 2026', montant: 31.32 };
+  demoReleve({ logement: 'maison', date: '2026-08-20', lignes: [{ periode: '2026-07', loyer: 556.45, provisions: 4.84 }, { periode: '2026-08', loyer: 1150, provisions: 10 }],
+    frais: [gli, { categorie: 'Honoraires d\'agence', libelle: 'Mise en location (EDL + bail − avoir)', montant: 350 }, { categorie: 'Honoraires d\'agence', libelle: 'Honoraires de gestion', montant: 103.27 }] });
+  ['2026-09-21', '2026-10-20'].forEach((d) => demoReleve({ logement: 'maison', date: d, lignes: [{ periode: d.slice(0, 7), loyer: 1150, provisions: 10 }],
+    frais: [gli, { categorie: 'Honoraires d\'agence', libelle: 'Honoraires de gestion', montant: 69.60 }] }));
+}
 function demoEtat() { return JSON.parse(JSON.stringify({ ...DEMO, maintenant: isoJour(new Date()) + 'T' + new Date().toTimeString().slice(0, 8) })); }
 function demoNow() { const d = new Date(); return isoJour(d) + ' ' + String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'); }
 async function demoApi(act, p) {
-  if (!DEMO) initDemo();
+  if (!DEMO) { initDemo(); demoSeedAgence(); }
   await new Promise((r) => setTimeout(r, act === 'etat' ? 250 : 600));
   const trouve = () => DEMO.paiements.find((x) => x.logement === p.logement && x.periode === p.periode);
   const lg = () => DEMO.logements.find((y) => y.id === p.logement);
@@ -1035,6 +1227,13 @@ async function demoApi(act, p) {
     case 'assuranceRecue': DEMO.params[p.logement + '.assurance_recue'] = p.recue ? String(new Date().getFullYear()) : ''; break;
     case 'ajouterDepense':
       DEMO.depenses.push({ id: 'd' + Date.now(), date: p.date, logement: p.logement, categorie: p.categorie, libelle: p.libelle, montant: Number(p.montant), remarque: p.remarque });
+      break;
+    case 'ajouterReleve': demoReleve(p); break;
+    case 'joindrePdfReleve': { const r = DEMO.releves.find((x) => x.id === p.id); if (r) r.pdf = '#'; break; }
+    case 'supprimerReleve':
+      DEMO.releves = DEMO.releves.filter((r) => r.id !== p.id);
+      DEMO.paiements = DEMO.paiements.filter((x) => !String(x.remarque).includes('[' + p.id + ']'));
+      DEMO.depenses = DEMO.depenses.filter((d) => !d.id.startsWith(p.id + '-'));
       break;
     case 'supprimerDepense': DEMO.depenses = DEMO.depenses.filter((d) => d.id !== p.id); break;
     case 'effacerErreur': DEMO.params.derniere_erreur = ''; break;

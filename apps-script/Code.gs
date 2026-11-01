@@ -102,6 +102,8 @@ function schema_() {
     s.push([id + '.alerte_bloquee_periode', 'text', '', L.libelle + ' : dernière alerte quittance bloquée (auto)', false]);
     s.push([id + '.alerte_attestation', 'text', '', L.libelle + ' : dernier email attestation à confirmer (auto)', false]);
     s.push([id + '.rappel_impaye', 'bool', 'FALSE', L.libelle + ' : rappel automatique si loyer impayé', true]);
+    s.push([id + '.gestion', 'text', 'directe', L.libelle + ' : gestion « directe » ou « agence » (l\'agence encaisse et envoie les quittances)', true]);
+    s.push([id + '.agence_nom', 'text', '', L.libelle + ' : nom de l\'agence', true]);
     s.push([id + '.rappel_periode', 'text', '', L.libelle + ' : dernier rappel de loyer envoyé (auto)', false]);
   });
   s.push(['derniere_erreur', 'text', '', 'Dernière erreur d\'envoi (auto)', false]);
@@ -197,6 +199,7 @@ function tacheAutomatique() {
 
     Object.keys(LOGEMENTS).forEach(function (id) {
       const L = LOGEMENTS[id];
+      if (estAgence_(P, id)) return; // géré par l'agence : rien d'automatique
 
       // ---- Quittance du mois ----
       if (bool_(P[id + '.quittance_active']) && echeanceAtteinte_(P, jour, heure, annee, mois)) {
@@ -512,8 +515,14 @@ function envoyerRecap_(P, periode) {
     if (p.valide_le && p.periode.slice(0, 4) === annee) totalAnnee += Number(String(p.montant).replace(',', '.')) || 0;
   });
   Object.keys(LOGEMENTS).forEach(function (id) {
-    if (!bool_(P[id + '.quittance_active'])) return;
     const L = LOGEMENTS[id];
+    if (estAgence_(P, id)) {
+      const pa = pays.filter(function (x) { return x.logement === id && x.periode === precedente; })[0];
+      lignes.push([L.libelle + ' — loyer ' + de_(mp.mois) + mp.mois + ' (agence)', pa && pa.valide_le ? euroTxt_(String(pa.montant).replace(',', '.')) : 'relevé non saisi']);
+      if (!pa || !pa.valide_le) aFaire.push('Saisir le relevé d\'agence ' + de_(mp.mois) + mp.mois + ' (' + L.libelle + ').');
+      return;
+    }
+    if (!bool_(P[id + '.quittance_active'])) return;
     const p = pays.filter(function (x) { return x.logement === id && x.periode === precedente; })[0];
     lignes.push([L.libelle + ' — loyer ' + de_(mp.mois) + mp.mois,
       p && p.valide_le ? euroTxt_(String(p.montant).replace(',', '.')) + (p.quittance_le ? ' · quittance envoyée' : ' · quittance NON envoyée') : 'non validé']);
@@ -521,7 +530,7 @@ function envoyerRecap_(P, periode) {
     else if (!p.quittance_le) aFaire.push('Envoyer la quittance ' + de_(mp.mois) + mp.mois + ' (' + L.libelle + ').');
   });
   Object.keys(LOGEMENTS).forEach(function (id) {
-    if (bool_(P[id + '.assurance_active']) && String(P[id + '.assurance_envoyee'] || '').slice(0, 4) === annee &&
+    if (!estAgence_(P, id) && bool_(P[id + '.assurance_active']) && String(P[id + '.assurance_envoyee'] || '').slice(0, 4) === annee &&
         String(P[id + '.assurance_recue']) !== annee) {
       aFaire.push('Confirmer la réception de l\'attestation d\'assurance ' + annee + ' (' + LOGEMENTS[id].libelle + ').');
     }
@@ -610,6 +619,9 @@ function doPost(e) {
 function executer_(req) {
   const id = req.logement;
   if (id && !LOGEMENTS[id] && !(id === 'commun' && req.action === 'ajouterDepense')) throw new Error('Logement inconnu');
+  if (['envoyerQuittance', 'envoyerAssurance', 'rappelLoyer'].indexOf(req.action) >= 0 && estAgence_(lireParams_(), id)) {
+    throw new Error('Ce logement est géré par l\'agence : aucun envoi au locataire depuis l\'application');
+  }
 
   switch (req.action) {
     case 'etat':
@@ -688,6 +700,18 @@ function executer_(req) {
       envoyerRappelLoyer_(id, req.periode || Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM'));
       return etat_();
 
+    case 'ajouterReleve':
+      ajouterReleve_(req);
+      return etat_();
+
+    case 'joindrePdfReleve':
+      joindrePdfReleve_(String(req.id || ''), req.pdf);
+      return etat_();
+
+    case 'supprimerReleve':
+      supprimerReleve_(String(req.id || ''));
+      return etat_();
+
     case 'ajouterDepense': {
       const montant = Number(String(req.montant).replace(',', '.'));
       if (!(montant > 0)) throw new Error('Montant invalide');
@@ -752,7 +776,7 @@ function etat_() {
 
   const paiements = lirePaiements_().map(function (p) {
     return { logement: p.logement, periode: p.periode, montant: p.montant, date_reception: p.date_reception,
-             valide_le: p.valide_le, quittance_le: p.quittance_le, pdf: p.pdf, remarque: p.remarque };
+             valide_le: p.valide_le, quittance_le: p.quittance_le, pdf: p.pdf, remarque: p.remarque, charges: p.charges };
   });
 
   // Journal (feuille Envoi email, colonnes H:J)
@@ -768,6 +792,7 @@ function etat_() {
 
   return {
     depenses: lireDepenses_(),
+    releves: lireReleves_(),
     historique: lireHistorique_(),
     maintenant: Utilities.formatDate(new Date(), tz, "yyyy-MM-dd'T'HH:mm:ss"),
     params: params, logements: logements, paiements: paiements, journal: journal
@@ -789,6 +814,7 @@ function principale_() { return getSS_().getSheetByName('Principale'); }
 function feuillePaiements_() {
   const sh = getSS_().getSheetByName(FEUILLE_PAIEMENTS);
   if (!sh) throw new Error('Onglet « Paiements » absent : exécute la fonction installer');
+  if (sh.getRange(1, 9).getValue() === '') sh.getRange(1, 9).setValue('Charges').setFontWeight('bold');
   return sh;
 }
 
@@ -865,6 +891,165 @@ function ecrireParam_(cle, valeur) {
   else sh.appendRow([cle, valeur, '']);
 }
 
+// ---------- Gestion par agence (relevés de gestion) ----------
+const FEUILLE_RELEVES = 'Relevés agence';
+const COLS_RELEVE = ['id', 'logement', 'date', 'periodes', 'loyers', 'provisions', 'frais', 'net', 'pdf', 'remarque'];
+
+function estAgence_(P, id) { return String(P[id + '.gestion'] || '').toLowerCase() === 'agence'; }
+
+function feuilleReleves_() {
+  const ss = getSS_();
+  let sh = ss.getSheetByName(FEUILLE_RELEVES);
+  if (!sh) {
+    sh = ss.insertSheet(FEUILLE_RELEVES);
+    sh.getRange(1, 1, 1, COLS_RELEVE.length).setValues([['ID', 'Logement', 'Date du relevé', 'Période(s)', 'Loyers', 'Provisions/charges', 'Frais déduits', 'Net viré', 'PDF', 'Remarque']]).setFontWeight('bold');
+    sh.setFrozenRows(1);
+    sh.getRange('A:J').setNumberFormat('@');
+  }
+  return sh;
+}
+
+function lireReleves_() {
+  const sh = getSS_().getSheetByName(FEUILLE_RELEVES);
+  if (!sh || sh.getLastRow() < 2) return [];
+  return sh.getRange(2, 1, sh.getLastRow() - 1, COLS_RELEVE.length).getDisplayValues()
+    .map(function (r, i) {
+      const o = { ligne: i + 2 };
+      COLS_RELEVE.forEach(function (c, j) { o[c] = r[j]; });
+      ['loyers', 'provisions', 'frais', 'net'].forEach(function (k) { o[k] = Number(String(o[k]).replace(',', '.')) || 0; });
+      return o;
+    }).filter(function (o) { return o.id; });
+}
+
+function dossierReleves_() {
+  const parent = DriveApp.getFolderById(DOSSIER_QUITTANCES);
+  const it = parent.getFoldersByName('Relevés agence');
+  return it.hasNext() ? it.next() : parent.createFolder('Relevés agence');
+}
+
+function enregistrerPdf_(pdf, nomParDefaut) {
+  if (!pdf || !pdf.base64) return '';
+  const octets = Utilities.base64Decode(String(pdf.base64));
+  if (octets.length > 10 * 1024 * 1024) throw new Error('PDF trop volumineux (10 Mo maximum)');
+  const nom = String(pdf.nom || nomParDefaut).replace(/[\\/:*?"<>|]/g, '_').slice(0, 120);
+  const blob = Utilities.newBlob(octets, 'application/pdf', /\.pdf$/i.test(nom) ? nom : nom + '.pdf');
+  return dossierReleves_().createFile(blob).getUrl();
+}
+
+const CATEGORIES_FRAIS = ['Honoraires d\'agence', 'Assurance loyers impayés (GLI)', 'Travaux & entretien', 'Taxe foncière', 'Autre'];
+
+// req = {logement, date (aaaa-mm-jj), lignes:[{periode, loyer, provisions}], frais:[{date?, categorie, libelle, montant}], net, remarque, pdf?}
+function ajouterReleve_(req) {
+  const id = req.logement;
+  if (!LOGEMENTS[id]) throw new Error('Logement inconnu');
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(req.date || '')) throw new Error('Date du relevé invalide');
+  const lignes = (req.lignes || []).filter(function (l) { return /^\d{4}-\d{2}$/.test(l.periode || ''); });
+  if (!lignes.length || lignes.length > 6) throw new Error('Indique au moins une période de loyer');
+  const frais = (req.frais || []).filter(function (f) { return Number(f.montant) !== 0; }).slice(0, 20);
+  if (lireReleves_().some(function (r) { return r.logement === id && r.date === req.date; })) {
+    throw new Error('Un relevé du ' + req.date + ' existe déjà pour ce logement');
+  }
+  const num = function (v) { const n = Number(String(v).replace(',', '.')); if (!isFinite(n)) throw new Error('Montant invalide'); return n; };
+  let loyers = 0, provisions = 0, totalFrais = 0;
+  lignes.forEach(function (l) { loyers += num(l.loyer); provisions += num(l.provisions || 0); });
+  frais.forEach(function (f) { totalFrais += num(f.montant); });
+  const net = Math.round((loyers + provisions - totalFrais) * 100) / 100;
+  if (req.net !== undefined && req.net !== '' && Math.abs(num(req.net) - net) > 0.02) {
+    throw new Error('Le net viré (' + num(req.net).toFixed(2) + ' €) ne correspond pas au calcul (' + net.toFixed(2) + ' €)');
+  }
+  const relId = 'R' + Utilities.getUuid().slice(0, 7);
+  const texte = function (s, max) { return String(s || '').replace(/^[=+\-@]/, "'$&").slice(0, max); };
+  const pdfUrl = enregistrerPdf_(req.pdf, 'Relevé ' + LOGEMENTS[id].libelle + ' ' + req.date);
+  const ddmmyyyy = req.date.slice(8, 10) + '/' + req.date.slice(5, 7) + '/' + req.date.slice(0, 4);
+
+  // Relevé
+  const sh = feuilleReleves_();
+  const ligneReleve = [relId, id, req.date, lignes.map(function (l) { return l.periode; }).join(', '),
+    loyers.toFixed(2), provisions.toFixed(2), totalFrais.toFixed(2), net.toFixed(2), pdfUrl, texte(req.remarque, 300)];
+  sh.getRange(sh.getLastRow() + 1, 1, 1, ligneReleve.length).setNumberFormat('@').setValues([ligneReleve]);
+
+  // Loyers encaissés (un paiement par période)
+  lignes.forEach(function (l) {
+    const brut = num(l.loyer) + num(l.provisions || 0);
+    majPaiement_(id, l.periode, {
+      montant: brut.toFixed(2), date_reception: req.date, valide_le: horodatage_(), quittance_le: 'agence',
+      pdf: pdfUrl, remarque: texte((l.detail ? l.detail + ' · ' : '') + 'Relevé agence du ' + ddmmyyyy + ' [' + relId + ']', 300),
+      charges: num(l.provisions || 0).toFixed(2)
+    });
+  });
+
+  // Frais déduits -> dépenses
+  const sd = feuilleDepenses_();
+  const lignesDep = frais.map(function (f, i) {
+    const d = /^\d{4}-\d{2}-\d{2}$/.test(f.date || '') ? f.date : req.date;
+    const cat = CATEGORIES_FRAIS.indexOf(f.categorie) >= 0 ? f.categorie : 'Autre';
+    return [relId + '-' + (i + 1), d, id, cat, texte(f.libelle || cat, 200), num(f.montant).toFixed(2), 'Relevé agence du ' + ddmmyyyy];
+  });
+  if (lignesDep.length) sd.getRange(sd.getLastRow() + 1, 1, lignesDep.length, 7).setNumberFormat('@').setValues(lignesDep);
+  return relId;
+}
+
+function joindrePdfReleve_(relId, pdf) {
+  const r = lireReleves_().filter(function (x) { return x.id === relId; })[0];
+  if (!r) throw new Error('Relevé introuvable');
+  const url = enregistrerPdf_(pdf, 'Relevé ' + LOGEMENTS[r.logement].libelle + ' ' + r.date);
+  if (!url) throw new Error('Aucun PDF reçu');
+  feuilleReleves_().getRange(r.ligne, COLS_RELEVE.indexOf('pdf') + 1).setValue(url);
+  lirePaiements_().forEach(function (p) {
+    if (p.remarque.indexOf('[' + relId + ']') >= 0) majPaiement_(p.logement, p.periode, { pdf: url });
+  });
+}
+
+function supprimerReleve_(relId) {
+  const r = lireReleves_().filter(function (x) { return x.id === relId; })[0];
+  if (!r) throw new Error('Relevé introuvable');
+  // dépenses liées
+  const sd = getSS_().getSheetByName('Dépenses');
+  if (sd && sd.getLastRow() >= 2) {
+    const ids = sd.getRange(2, 1, sd.getLastRow() - 1, 1).getDisplayValues();
+    for (let i = ids.length - 1; i >= 0; i--) if (ids[i][0].indexOf(relId + '-') === 0) sd.deleteRow(i + 2);
+  }
+  // paiements liés
+  const sp = feuillePaiements_();
+  lirePaiements_().map(function (p) { return p; }).reverse().forEach(function (p) {
+    if (p.remarque.indexOf('[' + relId + ']') >= 0) sp.deleteRow(p.ligne);
+  });
+  feuilleReleves_().deleteRow(r.ligne);
+}
+
+// À exécuter UNE FOIS depuis l'éditeur : passe la Maison en gestion par agence
+// et importe les relevés d'août, septembre et octobre 2026 (sans les PDF, à joindre ensuite depuis l'appli).
+function importerRelevesAgence2026() {
+  ecrireParam_('maison.gestion', 'agence');
+  if (!lireParams_()['maison.agence_nom']) ecrireParam_('maison.agence_nom', 'Agence (Villenave-d\'Ornon)');
+  ecrireParam_('maison.quittance_active', 'FALSE');
+  ecrireParam_('maison.assurance_active', 'FALSE');
+  ecrireParam_('maison.rappel_impaye', 'FALSE');
+  const gli = function (d) { return { date: d, categorie: 'Assurance loyers impayés (GLI)', libelle: 'Cotisation garantie des loyers impayés 2026', montant: 31.32 }; };
+  const gestion = function (ht, tva) { return { categorie: 'Honoraires d\'agence', libelle: 'Honoraires de gestion (HT ' + ht.toFixed(2) + ' + TVA ' + tva.toFixed(2) + ')', montant: Math.round((ht + tva) * 100) / 100 }; };
+  const releves = [
+    { logement: 'maison', date: '2026-08-20', net: 1236.70, remarque: 'Locataire TRIVERIO Dominique — entrée le 17/07/2026',
+      lignes: [{ periode: '2026-07', loyer: 556.45, provisions: 4.84, detail: 'Loyer du 17/07 au 31/07/2026' },
+               { periode: '2026-08', loyer: 1150, provisions: 10 }],
+      frais: [gli('2026-08-19'),
+              { date: '2026-07-27', categorie: 'Honoraires d\'agence', libelle: 'Mise en location : état des lieux 360 + visite/dossier/bail 790 − avoir 800', montant: 350 },
+              gestion(86.06, 17.21)] },
+    { logement: 'maison', date: '2026-09-21', net: 1059.08, remarque: 'Locataire TRIVERIO Dominique',
+      lignes: [{ periode: '2026-09', loyer: 1150, provisions: 10 }], frais: [gli('2026-09-21'), gestion(58, 11.60)] },
+    { logement: 'maison', date: '2026-10-20', net: 1059.08, remarque: 'Locataire TRIVERIO Dominique',
+      lignes: [{ periode: '2026-10', loyer: 1150, provisions: 10 }], frais: [gli('2026-10-20'), gestion(58, 11.60)] }
+  ];
+  const deja = lireReleves_();
+  let n = 0;
+  releves.forEach(function (r) {
+    if (deja.some(function (x) { return x.logement === r.logement && x.date === r.date; })) return;
+    ajouterReleve_(r); n++;
+  });
+  const msg = n + ' relevé(s) importé(s). La Maison est maintenant en gestion par agence.';
+  Logger.log(msg);
+  try { SpreadsheetApp.getUi().alert(msg); } catch (e) { /* éditeur */ }
+}
+
 // ---------- Paiements ----------
 // ---------- Dépenses ----------
 function feuilleDepenses_() {
@@ -903,7 +1088,7 @@ function lireHistorique_() {
     });
 }
 
-const COLS_PAIEMENT = ['logement', 'periode', 'montant', 'date_reception', 'valide_le', 'quittance_le', 'pdf', 'remarque'];
+const COLS_PAIEMENT = ['logement', 'periode', 'montant', 'date_reception', 'valide_le', 'quittance_le', 'pdf', 'remarque', 'charges'];
 
 function lirePaiements_() {
   const sh = feuillePaiements_();
