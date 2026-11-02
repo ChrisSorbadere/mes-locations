@@ -1,7 +1,7 @@
 /* Mes Locations — PWA (vanilla JS) */
 'use strict';
 
-const VERSION = '1.3.2';
+const VERSION = '1.4.0';
 const MOIS = ['janvier', 'février', 'mars', 'avril', 'mai', 'juin', 'juillet', 'août', 'septembre', 'octobre', 'novembre', 'décembre'];
 const MOIS_COURT = ['janv.', 'févr.', 'mars', 'avr.', 'mai', 'juin', 'juil.', 'août', 'sept.', 'oct.', 'nov.', 'déc.'];
 const CATEGORIES = ['Taxe foncière', 'Assurance propriétaire (PNO)', 'Travaux & entretien', 'Charges de copropriété', 'Honoraires d\'agence', 'Assurance loyers impayés (GLI)', 'Frais de gestion', 'Intérêts d\'emprunt', 'Autre'];
@@ -885,6 +885,7 @@ function vueReglages() {
     ${sw('notif_attestation', 'Attestation à confirmer', 'Te demande si l\'attestation d\'assurance est arrivée')}
     <div style="margin-top:12px">${inp('notif_attestation_jours', 'Délai après la demande, puis entre deux emails (jours)', 'number', 'min="1" max="60" inputmode="numeric" data-num="1"')}</div>
     ${sw('notif_quittance_bloquee', 'Quittance bloquée', 'Paiement validé mais quittance non envoyée')}
+    ${sw('notif_actions', 'Actions à faire', 'Un email dès qu\'une nouvelle action apparaît (au plus un par jour)')}
     ${sw('recap_mensuel', 'Récapitulatif mensuel', 'Le 1er du mois : loyers du mois écoulé et actions en attente')}
     <p class="hint" style="margin-top:12px">Les erreurs d'envoi sont toujours signalées (une fois par erreur).</p>
     <div class="actions"><button class="btn ghost block" data-act="testNotif">Recevoir un exemple de notification</button></div>
@@ -1132,7 +1133,7 @@ function initDemo() {
     copie_cachee: 'chris.soulas@gmail.com', signature: 'Christophe SOULAS', email_alertes: 'chris.soulas@gmail.com', alertes_actives: true,
     quittance_jour: 10, quittance_heure: 12, envoi_a_la_validation: true, assurance_jour: 4, assurance_mois: 1, relance_active: true, relance_jours: 15,
     rappel_impaye_jours: 5, notif_loyer: true, notif_loyer_rappel_jours: 3, notif_attestation: true, notif_attestation_jours: 7,
-    notif_quittance_bloquee: true, recap_mensuel: true, app_url: 'https://chrissorbadere.github.io/Loyers/index.html',
+    notif_quittance_bloquee: true, notif_actions: true, recap_mensuel: true, app_url: 'https://chrissorbadere.github.io/Loyers/index.html',
     objet_quittance: 'Quittance de loyer - {mois} {annee} - {adresse}',
     corps_quittance: 'Bonjour {civilite} {nom},\n\nVoici la quittance de loyer du mois de {mois} {annee} pour votre location du :\n\n{adresse}\n{commune}\n\nVous souhaitant bonne réception.\nBien cordialement.\n{signature}',
     objet_rappel_loyer: 'Rappel : loyer de {mois} {annee} - {adresse}',

@@ -60,6 +60,7 @@ function schema_() {
     ['notif_attestation', 'bool', 'TRUE', 'Email pour confirmer la réception de l\'attestation d\'assurance', true],
     ['notif_attestation_jours', 'num', '7', 'Délai après la demande (puis entre deux emails) pour confirmer l\'attestation', true],
     ['notif_quittance_bloquee', 'bool', 'TRUE', 'Email si un paiement est validé mais la quittance n\'est pas partie', true],
+    ['notif_actions', 'bool', 'TRUE', 'Email « Actions à faire » dès qu\'une nouvelle action apparaît (1 par jour au plus)', true],
     ['recap_mensuel', 'bool', 'TRUE', 'Récapitulatif mensuel le 1er du mois', true],
     ['app_url', 'text', 'https://chrissorbadere.github.io/Loyers/index.html', 'Adresse de l\'application (lien des emails)', true],
     ['quittance_jour', 'num', '10', 'Jour d\'envoi des quittances (1-31)', true],
@@ -109,6 +110,8 @@ function schema_() {
   s.push(['derniere_erreur', 'text', '', 'Dernière erreur d\'envoi (auto)', false]);
   s.push(['derniere_erreur_msg', 'text', '', 'Texte de la dernière erreur signalée par email (auto)', false]);
   s.push(['recap_dernier', 'text', '', 'Mois du dernier récapitulatif envoyé (auto)', false]);
+  s.push(['actions_signalees', 'text', '', 'Actions déjà signalées par email (auto)', false]);
+  s.push(['actions_dernier_envoi', 'text', '', 'Date du dernier email « Actions à faire » (auto)', false]);
   s.push(['token', 'text', '', 'CODE SECRET de l\'application — ne pas partager', false]);
   return s;
 }
@@ -276,6 +279,22 @@ function tacheAutomatique() {
         } catch (err) { erreurs.push(L.libelle + ' (notification attestation) : ' + err.message); }
       }
     });
+
+    // ---- Email « Actions à faire » (au plus un par jour, seulement s'il y a du nouveau) ----
+    try {
+      const P3 = lireParams_();
+      const aujIso = Utilities.formatDate(now, tz, 'yyyy-MM-dd');
+      if (bool_(P3.notif_actions) && heure >= 8 && P3.actions_dernier_envoi !== aujIso) {
+        const actions = actionsEnAttente_(P3, now);
+        const deja = String(P3.actions_signalees || '').split('|').filter(String);
+        const nouvelles = actions.filter(function (a) { return deja.indexOf(a.cle) < 0; });
+        if (nouvelles.length) {
+          envoyerActions_(P3, actions, nouvelles);
+          ecrireParam_('actions_dernier_envoi', aujIso);
+        }
+        ecrireParam_('actions_signalees', actions.map(function (a) { return a.cle; }).join('|'));
+      }
+    } catch (err) { erreurs.push('Email actions à faire : ' + err.message); }
 
     // ---- Récapitulatif mensuel (le 1er du mois) ----
     if (bool_(P.recap_mensuel) && jour === 1 && heure >= 8 && P.recap_dernier !== periode) {
@@ -543,6 +562,74 @@ function envoyerRecap_(P, periode) {
     'Récapitulatif ' + de_(mp.mois) + mp.mois + ' ' + mp.annee,
     aFaire.length ? ['À faire :'].concat(aFaire.map(function (t) { return '• ' + t; })) : ['Tout est à jour : aucune action en attente.'],
     lignes, 'Ouvrir Mes Locations', aFaire.length ? 'accueil' : 'bilan', '');
+}
+
+// Liste des actions en attente (même logique que le bloc « À faire » de l'application)
+function actionsEnAttente_(P, now) {
+  const tz = Session.getScriptTimeZone();
+  const per = Utilities.formatDate(now, tz, 'yyyy-MM');
+  const d = new Date(Number(per.slice(0, 4)), Number(per.slice(5, 7)) - 2, 1);
+  const prec = Utilities.formatDate(d, tz, 'yyyy-MM');
+  const pays = lirePaiements_();
+  const trouve = function (id, pe) { return pays.filter(function (x) { return x.logement === id && x.periode === pe; })[0]; };
+  const fmt = function (dt) { return Utilities.formatDate(dt, tz, 'dd/MM/yyyy'); };
+  const out = [];
+  Object.keys(LOGEMENTS).forEach(function (id) {
+    const L = LOGEMENTS[id];
+    const anterieur = function (pe) { return pays.some(function (x) { return x.logement === id && x.periode < pe; }); };
+    if (estAgence_(P, id)) {
+      [prec, per].forEach(function (pe) {
+        const p = trouve(id, pe);
+        if (p && p.valide_le) return;
+        if (pe === prec && !anterieur(prec)) return;
+        const niveau = (pe === prec || now.getDate() >= 22) ? 'orange' : 'a-venir';
+        const mp = moisDePeriode_(pe);
+        out.push({ cle: 'releve:' + id + ':' + pe + ':' + niveau, niveau: niveau,
+          titre: 'Relevé d\'agence ' + de_(mp.mois) + mp.mois + ' à saisir — ' + L.libelle,
+          detail: niveau === 'orange' ? 'normalement reçu vers le 20' : 'à venir vers le 20 ' + mp.mois });
+      });
+      return;
+    }
+    if (bool_(P[id + '.quittance_active'])) {
+      [prec, per].forEach(function (pe) {
+        if (pe === prec && !anterieur(per)) return;
+        const p = trouve(id, pe);
+        const ech = dateEcheance_(P, pe);
+        const j = Math.ceil((ech - now) / 86400000);
+        const mp = moisDePeriode_(pe);
+        if (!p || !p.valide_le) {
+          const niveau = j <= 0 ? 'rouge' : j <= 7 ? 'orange' : 'a-venir';
+          out.push({ cle: 'loyer:' + id + ':' + pe + ':' + niveau, niveau: niveau,
+            titre: 'Loyer ' + de_(mp.mois) + mp.mois + ' à valider — ' + L.libelle,
+            detail: euroTxt_(locataire_(id).loyer) + ' · ' + (j <= 0 ? 'échéance passée le ' : 'échéance le ') + fmt(ech) });
+        } else if (!p.quittance_le && ech <= now) {
+          out.push({ cle: 'quittance:' + id + ':' + pe, niveau: 'orange',
+            titre: 'Quittance ' + de_(mp.mois) + mp.mois + ' à envoyer — ' + L.libelle, detail: 'paiement validé, quittance pas encore partie' });
+        }
+      });
+    }
+    const annee = now.getFullYear();
+    if (bool_(P[id + '.assurance_active']) && String(P[id + '.assurance_envoyee'] || '').slice(0, 4) === String(annee) &&
+        String(P[id + '.assurance_recue']) !== String(annee)) {
+      out.push({ cle: 'attestation:' + id + ':' + annee, niveau: 'orange',
+        titre: 'Attestation d\'assurance ' + annee + ' à confirmer — ' + L.libelle, detail: 'demandée le ' + fmt(parseDate_(P[id + '.assurance_envoyee'])) });
+    }
+  });
+  if (P.derniere_erreur) out.push({ cle: 'erreur:' + String(P.derniere_erreur).length, niveau: 'rouge', titre: 'Erreur d\'envoi à vérifier', detail: String(P.derniere_erreur).slice(0, 140) });
+  const ordre = { 'rouge': 0, 'orange': 1, 'a-venir': 2 };
+  return out.sort(function (a, b) { return ordre[a.niveau] - ordre[b.niveau]; });
+}
+
+function envoyerActions_(P, actions, nouvelles) {
+  const marque = { 'rouge': '🔴 ', 'orange': '🟠 ', 'a-venir': '🔵 ' };
+  const cles = nouvelles.map(function (a) { return a.cle; });
+  notifier_(P,
+    actions.length + ' action' + (actions.length > 1 ? 's' : '') + ' à faire' + (nouvelles.length ? ' (' + nouvelles.length + ' nouvelle' + (nouvelles.length > 1 ? 's' : '') + ')' : ''),
+    actions.length > 1 ? actions.length + ' actions t\'attendent dans Mes Locations' : 'Une action t\'attend dans Mes Locations',
+    ['Voici ce qui est en attente. Les nouveautés depuis le dernier email sont marquées « Nouveau ».'],
+    actions.map(function (a) { return [marque[a.niveau] + (cles.indexOf(a.cle) >= 0 ? 'Nouveau · ' : '') + a.titre, a.detail]; }),
+    'Ouvrir « À faire »', 'accueil',
+    '🔴 urgent · 🟠 dans les 7 jours · 🔵 à venir. Un seul email par jour au plus, et seulement s\'il y a du nouveau.');
 }
 
 // Compatibilité : ancienne fonction d'alerte texte
