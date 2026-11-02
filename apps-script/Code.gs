@@ -1059,6 +1059,22 @@ function corrigerLocataireMaison() {
   try { SpreadsheetApp.getUi().alert(msg); } catch (e) { /* éditeur */ }
 }
 
+// À exécuter depuis l'éditeur si l'appli affiche « The script does not have permission… (gmail) ».
+// Google accorde désormais les autorisations fonction par fonction : celle-ci demande TOUTES les autorisations
+// du script (cocher toutes les cases, dont Gmail), puis t'envoie un email de test.
+function autoriser() {
+  try { ScriptApp.requireAllScopes(ScriptApp.AuthMode.FULL); } catch (e) { /* ancienne version d'Apps Script */ }
+  const moi = Session.getEffectiveUser().getEmail();
+  GmailApp.sendEmail(moi, '[Mes Locations] Autorisation Gmail OK',
+    'Le script peut envoyer des emails depuis ' + moi + '. Tu peux réessayer « Recevoir un exemple de notification » dans l\'application.',
+    { name: 'Mes Locations' });
+  DriveApp.getFolderById(DOSSIER_QUITTANCES).getName();
+  UrlFetchApp.fetch('https://www.google.com', { muteHttpExceptions: true });
+  const msg = 'Autorisations accordées pour ' + moi + '. Un email de test vient d\'être envoyé.';
+  Logger.log(msg);
+  try { SpreadsheetApp.getUi().alert(msg); } catch (e) { /* éditeur */ }
+}
+
 // À exécuter UNE FOIS depuis l'éditeur : passe la Maison en gestion par agence
 // et importe les relevés d'août, septembre et octobre 2026 (sans les PDF, à joindre ensuite depuis l'appli).
 function importerRelevesAgence2026() {
