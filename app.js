@@ -1,7 +1,7 @@
 /* Mes Locations — PWA (vanilla JS) */
 'use strict';
 
-const VERSION = '1.3.1';
+const VERSION = '1.3.2';
 const MOIS = ['janvier', 'février', 'mars', 'avril', 'mai', 'juin', 'juillet', 'août', 'septembre', 'octobre', 'novembre', 'décembre'];
 const MOIS_COURT = ['janv.', 'févr.', 'mars', 'avr.', 'mai', 'juin', 'juil.', 'août', 'sept.', 'oct.', 'nov.', 'déc.'];
 const CATEGORIES = ['Taxe foncière', 'Assurance propriétaire (PNO)', 'Travaux & entretien', 'Charges de copropriété', 'Honoraires d\'agence', 'Assurance loyers impayés (GLI)', 'Frais de gestion', 'Intérêts d\'emprunt', 'Autre'];
@@ -318,11 +318,13 @@ function vueAccueil() {
 
   // À faire
   const taches = tachesAFaire();
-  h += `<p class="section-title">À faire</p>`;
+  h += taches.length
+    ? `<p class="section-title alerte"><span class="badge-alerte">${taches.length}</span>À faire</p>`
+    : `<p class="section-title">À faire</p>`;
   if (!taches.length) {
     h += `<div class="todo"><div class="todo-ok"><div class="todo-ico st-ok">✓</div><div class="todo-txt"><strong>Tout est à jour</strong><small>Aucune action requise pour l'instant</small></div></div></div>`;
   } else {
-    h += `<div class="todo">` + taches.map((t) => `<div class="todo-item">
+    h += `<div class="todo alerte">` + taches.map((t) => `<div class="todo-item urg-${t.cls}">
       <div class="todo-head"><div class="todo-ico st-${t.cls}">${t.ico}</div>
         <div class="todo-txt"><strong>${t.log ? `<span class="log-dot" style="--lc:${couleur(t.log)}"></span>` : ''}${esc(t.titre)}</strong><small>${esc(t.detail)}</small></div></div>
       <div class="todo-actions">${t.actions.map(([cls, lbl, act, per, rel]) =>

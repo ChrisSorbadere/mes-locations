@@ -336,3 +336,19 @@ details.plain > summary::-webkit-details-marker { display: none; }
 .grid2 > * { min-width: 0; }
 .input { min-width: 0; max-width: 100%; }
 input[type="date"].input, input[type="month"].input { -webkit-appearance: none; appearance: none; }
+
+/* ---------- « À faire » mis en évidence ---------- */
+:root { --alerte: #C62828; --alerte-fond: #FDECEA; --alerte-bord: #E57373; --alerte-txt: #FFFFFF; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) { --alerte: #FF6B60; --alerte-fond: #3A1614; --alerte-bord: #FF6B60; --alerte-txt: #1A0605; }
+}
+:root[data-theme="dark"] { --alerte: #FF6B60; --alerte-fond: #3A1614; --alerte-bord: #FF6B60; --alerte-txt: #1A0605; }
+.section-title.alerte { color: var(--alerte); display: flex; align-items: center; gap: 8px; font-size: 14px; }
+.badge-alerte { display: inline-grid; place-items: center; min-width: 24px; height: 24px; padding: 0 7px; border-radius: 12px;
+  background: var(--alerte); color: var(--alerte-txt); font-size: 13px; font-weight: 800; letter-spacing: 0; }
+.todo.alerte { border: 2px solid var(--alerte-bord); background: var(--alerte-fond); box-shadow: 0 0 0 4px color-mix(in srgb, var(--alerte) 14%, transparent), var(--shadow); }
+.todo.alerte .todo-item { border-top-color: color-mix(in srgb, var(--alerte) 30%, transparent); position: relative; }
+.todo.alerte .todo-item::before { content: ""; position: absolute; left: 0; top: 12px; bottom: 12px; width: 4px; border-radius: 0 3px 3px 0; background: var(--alerte); }
+.todo.alerte .todo-item.urg-warn::before { background: var(--warn); }
+.todo.alerte .todo-item.urg-info::before { background: var(--accent); }
+.todo.alerte .todo-txt small { color: var(--ink); opacity: .78; }
