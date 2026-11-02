@@ -1024,7 +1024,31 @@ function supprimerReleve_(relId) {
 // K6/L6 cherchent sa civilité et son prénom en correspondance exacte.
 function corrigerLocataireMaison() {
   const p = principale_();
-  p.getRange('M6').setFormula('=IFERROR(INDEX(SORT(FILTER({A6:A18,D6:D18},A6:A18<>"",D6:D18<>"",D6:D18<=TODAY(),(E6:E18="")+(E6:E18>=TODAY())),2,FALSE),1,1),"")');
+  const cond = '(A6:A18<>"")*(D6:D18<>"")*(D6:D18<=TODAY())*((E6:E18="")+(E6:E18>=TODAY()))';
+  const essais = [
+    '=IFERROR(ARRAYFORMULA(LOOKUP(2,1/(' + cond + '),A6:A18)),"")',
+    '=IFERROR(INDEX(FILTER(A6:A18,' + cond + '),ROWS(FILTER(A6:A18,' + cond + '))),"")'
+  ];
+  let ok = false;
+  for (let i = 0; i < essais.length && !ok; i++) {
+    p.getRange('M6').setFormula(essais[i]);
+    SpreadsheetApp.flush();
+    const v = p.getRange('M6').getDisplayValue();
+    ok = v !== '' && v.charAt(0) !== '#';
+  }
+  let note = '';
+  if (!ok) {
+    // Secours : calcul par le script et valeur fixe (à relancer à chaque changement de locataire)
+    const auj = new Date();
+    let nom = '';
+    p.getRange('A6:E18').getValues().forEach(function (r) {
+      const debut = r[3] instanceof Date ? r[3] : null;
+      const fin = r[4] instanceof Date ? r[4] : null;
+      if (r[0] && debut && debut <= auj && (!fin || fin >= auj)) nom = r[0];
+    });
+    p.getRange('M6').setValue(nom);
+    note = '\n(Valeur fixe : relance cette fonction après un changement de locataire.)';
+  }
   p.getRange('K6').setFormula('=IFERROR(VLOOKUP(M6,$A$6:$C$18,3,FALSE),"")');
   p.getRange('L6').setFormula('=IFERROR(VLOOKUP(M6,$A$6:$B$18,2,FALSE),"")');
   // Même correction de prudence pour le Trianon (recherche exacte)
@@ -1032,7 +1056,7 @@ function corrigerLocataireMaison() {
   p.getRange('L21').setFormula('=IFERROR(VLOOKUP(M21,$A$22:$B$33,2,FALSE),"")');
   SpreadsheetApp.flush();
   const msg = 'Locataire actuel de la Maison : ' + [p.getRange('K6').getDisplayValue(), p.getRange('L6').getDisplayValue(), p.getRange('M6').getDisplayValue()].join(' ').trim() +
-    '\n(Le locataire retenu est celui dont la date de début (col. D) est passée et dont la date de fin (col. E) est vide ou à venir.)';
+    '\n(Locataire retenu : date de début (col. D) passée et date de fin (col. E) vide ou à venir ; le plus bas dans la liste s\'il y en a plusieurs.)' + note;
   Logger.log(msg);
   try { SpreadsheetApp.getUi().alert(msg); } catch (e) { /* éditeur */ }
 }
