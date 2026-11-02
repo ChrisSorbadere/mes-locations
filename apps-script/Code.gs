@@ -196,6 +196,7 @@ function tacheAutomatique() {
     const annee = Number(Utilities.formatDate(now, tz, 'yyyy'));
     const periode = Utilities.formatDate(now, tz, 'yyyy-MM');
     const erreurs = [];
+    try { majLocataires_(); } catch (err) { erreurs.push('Locataires : ' + err.message); }
 
     Object.keys(LOGEMENTS).forEach(function (id) {
       const L = LOGEMENTS[id];
@@ -1017,46 +1018,43 @@ function supprimerReleve_(relId) {
   feuilleReleves_().deleteRow(r.ligne);
 }
 
-// À exécuter UNE FOIS depuis l'éditeur : corrige le choix du locataire actuel de la Maison (onglet Principale).
-// Avant : M6 passait par l'onglet Moteur (formule cassée en I5, fin de bail de LEURS = date du jour)
-// et K6/L6 utilisaient une RECHERCHEV approximative sur une liste non triée.
-// Après : M6 prend le locataire dont le bail a commencé et n'est pas terminé (le plus récent s'il y en a plusieurs),
-// K6/L6 cherchent sa civilité et son prénom en correspondance exacte.
-function corrigerLocataireMaison() {
+// Locataire actuel (Maison et Trianon), calculé par le script à partir du tableau des locataires de l'onglet Principale
+// (colonnes A nom, B prénom, C civilité, D début, E fin) et écrit en valeurs dans K/L/M.
+// Retenu : début passé et fin vide ou à venir ; le plus bas dans la liste s'il y en a plusieurs.
+// Mis à jour automatiquement à chaque passage horaire : plus besoin de formules.
+const TABLES_LOCATAIRES = [
+  { libelle: 'Maison', premiere: 6, derniere: 18, civilite: 'K6', prenom: 'L6', nom: 'M6' },
+  { libelle: 'Trianon', premiere: 22, derniere: 33, civilite: 'K21', prenom: 'L21', nom: 'M21' }
+];
+
+function majLocataires_() {
   const p = principale_();
-  const cond = '(A6:A18<>"")*(D6:D18<>"")*(D6:D18<=TODAY())*((E6:E18="")+(E6:E18>=TODAY()))';
-  const essais = [
-    '=IFERROR(ARRAYFORMULA(LOOKUP(2,1/(' + cond + '),A6:A18)),"")',
-    '=IFERROR(INDEX(FILTER(A6:A18,' + cond + '),ROWS(FILTER(A6:A18,' + cond + '))),"")'
-  ];
-  let ok = false;
-  for (let i = 0; i < essais.length && !ok; i++) {
-    p.getRange('M6').setFormula(essais[i]);
-    SpreadsheetApp.flush();
-    const v = p.getRange('M6').getDisplayValue();
-    ok = v !== '' && v.charAt(0) !== '#';
-  }
-  let note = '';
-  if (!ok) {
-    // Secours : calcul par le script et valeur fixe (à relancer à chaque changement de locataire)
-    const auj = new Date();
-    let nom = '';
-    p.getRange('A6:E18').getValues().forEach(function (r) {
+  const auj = new Date(); auj.setHours(0, 0, 0, 0);
+  const finJour = new Date(auj.getTime() + 86400000 - 1);
+  return TABLES_LOCATAIRES.map(function (t) {
+    const lignes = p.getRange(t.premiere, 1, t.derniere - t.premiere + 1, 5).getValues();
+    let choisi = null;
+    lignes.forEach(function (r) {
       const debut = r[3] instanceof Date ? r[3] : null;
       const fin = r[4] instanceof Date ? r[4] : null;
-      if (r[0] && debut && debut <= auj && (!fin || fin >= auj)) nom = r[0];
+      if (String(r[0]).trim() && debut && debut <= finJour && (!fin || fin >= auj)) choisi = r;
     });
-    p.getRange('M6').setValue(nom);
-    note = '\n(Valeur fixe : relance cette fonction après un changement de locataire.)';
-  }
-  p.getRange('K6').setFormula('=IFERROR(VLOOKUP(M6,$A$6:$C$18,3,FALSE),"")');
-  p.getRange('L6').setFormula('=IFERROR(VLOOKUP(M6,$A$6:$B$18,2,FALSE),"")');
-  // Même correction de prudence pour le Trianon (recherche exacte)
-  p.getRange('K21').setFormula('=IFERROR(VLOOKUP(M21,$A$22:$C$33,3,FALSE),"")');
-  p.getRange('L21').setFormula('=IFERROR(VLOOKUP(M21,$A$22:$B$33,2,FALSE),"")');
+    if (!choisi) return t.libelle + ' : aucun locataire en cours (vérifie les dates)';
+    const valeurs = [[String(choisi[2]).trim(), String(choisi[1]).trim(), String(choisi[0]).trim()]];
+    [[t.civilite, 0], [t.prenom, 1], [t.nom, 2]].forEach(function (x) {
+      const cel = p.getRange(x[0]);
+      if (cel.getFormula() || cel.getDisplayValue() !== valeurs[0][x[1]]) cel.setValue(valeurs[0][x[1]]);
+    });
+    return t.libelle + ' : ' + valeurs[0].join(' ');
+  });
+}
+
+// À exécuter une fois depuis l'éditeur (ensuite, la tâche horaire s'en charge)
+function corrigerLocataireMaison() {
+  const res = majLocataires_();
   SpreadsheetApp.flush();
-  const msg = 'Locataire actuel de la Maison : ' + [p.getRange('K6').getDisplayValue(), p.getRange('L6').getDisplayValue(), p.getRange('M6').getDisplayValue()].join(' ').trim() +
-    '\n(Locataire retenu : date de début (col. D) passée et date de fin (col. E) vide ou à venir ; le plus bas dans la liste s\'il y en a plusieurs.)' + note;
+  const msg = 'Locataires actuels\n' + res.join('\n') +
+    '\n\nRègle : date de début (col. D) passée et date de fin (col. E) vide ou à venir ; le plus bas dans la liste s\'il y en a plusieurs. Mise à jour automatique toutes les heures.';
   Logger.log(msg);
   try { SpreadsheetApp.getUi().alert(msg); } catch (e) { /* éditeur */ }
 }
