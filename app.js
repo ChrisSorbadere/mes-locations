@@ -1,7 +1,7 @@
 /* Mes Locations — PWA (vanilla JS) */
 'use strict';
 
-const VERSION = '1.3.0';
+const VERSION = '1.3.1';
 const MOIS = ['janvier', 'février', 'mars', 'avril', 'mai', 'juin', 'juillet', 'août', 'septembre', 'octobre', 'novembre', 'décembre'];
 const MOIS_COURT = ['janv.', 'févr.', 'mars', 'avr.', 'mai', 'juin', 'juil.', 'août', 'sept.', 'oct.', 'nov.', 'déc.'];
 const CATEGORIES = ['Taxe foncière', 'Assurance propriétaire (PNO)', 'Travaux & entretien', 'Charges de copropriété', 'Honoraires d\'agence', 'Assurance loyers impayés (GLI)', 'Frais de gestion', 'Intérêts d\'emprunt', 'Autre'];
@@ -249,37 +249,45 @@ function rendre() {
 function tachesAFaire() {
   const t = [];
   const per = periodeCourante();
+  const prec = dePeriode(per, -1);
   const n = maintenant();
   const pr = P();
+  const jours = (d) => Math.ceil((d - n) / 86400000);
   if (pr.derniere_erreur) {
     t.push({ cls: 'danger', ico: '!', titre: 'Erreur d\'envoi', detail: pr.derniere_erreur,
       actions: [['ghost', 'Effacer', 'effacerErreur', '']] });
   }
   logements().forEach((l) => {
-    if (!pr[l.id + '.quittance_active']) return;
-    const p = paiement(l.id, per);
-    const ech = dateEcheance(per);
-    const joursAvant = (ech - n) / 86400000;
-    if (!p?.valide_le && joursAvant <= 7) {
-      const passe = joursAvant <= 0;
-      t.push({ cls: passe ? 'danger' : 'warn', ico: '€', log: l.id,
-        titre: `Loyer ${de(moisDe(per))}${moisDe(per)} — ${l.libelle}`,
-        detail: `${euro(l.loyer)} · ${passe ? 'échéance passée le ' : 'échéance le '}${fmtJour(ech)}`,
-        actions: [['primary', 'Payé ✓', 'payeRapide', per], ['ghost', 'Autre montant', 'paiement', per]]
-          .concat(passe ? [['ghost', 'Rappel', 'rappelLoyer', per]] : []) });
-    }
-    if (p?.valide_le && !p.quittance_le && (per !== periodeCourante() || ech <= n)) {
-      t.push({ cls: 'warn', ico: '✉', log: l.id, titre: `Quittance ${de(moisDe(per))}${moisDe(per)} à envoyer — ${l.libelle}`,
-        detail: 'Paiement validé, quittance pas encore partie', actions: [['primary', 'Envoyer', 'envoyerQ', per]] });
-    }
+    if (estAgence(l.id) || !pr[l.id + '.quittance_active']) return;
+    [prec, per].forEach((pe) => {
+      const p = paiement(l.id, pe);
+      const ech = dateEcheance(pe);
+      const j = jours(ech);
+      // Mois précédent : seulement s'il reste quelque chose à faire et que l'appli suivait déjà ce logement
+      if (pe === prec && !S.data.paiements.some((x) => x.logement === l.id && x.periode < per)) return;
+      if (!p?.valide_le) {
+        const cls = j <= 0 ? 'danger' : j <= 7 ? 'warn' : 'info';
+        const quand = j <= 0 ? 'échéance passée le ' + fmtJour(ech) : 'échéance le ' + fmtJour(ech) + (j > 1 ? ' (dans ' + j + ' jours)' : ' (demain)');
+        t.push({ cls, ico: '€', log: l.id, titre: `Loyer ${de(moisDe(pe))}${moisDe(pe)} à valider — ${l.libelle}`,
+          detail: `${euro(l.loyer)} · ${quand}`,
+          actions: [['primary', 'Payé ✓', 'payeRapide', pe], ['ghost', 'Autre montant', 'paiement', pe]]
+            .concat(j <= 0 ? [['ghost', 'Rappel', 'rappelLoyer', pe]] : []) });
+      } else if (!p.quittance_le && ech <= n) {
+        t.push({ cls: 'warn', ico: '✉', log: l.id, titre: `Quittance ${de(moisDe(pe))}${moisDe(pe)} à envoyer — ${l.libelle}`,
+          detail: 'Paiement validé, quittance pas encore partie', actions: [['primary', 'Envoyer', 'envoyerQ', pe]] });
+      }
+    });
   });
   logements().forEach((l) => {
     if (!estAgence(l.id)) return;
-    const p = paiement(l.id, per);
-    if (!p?.valide_le && n.getDate() >= 22) {
-      t.push({ cls: 'warn', ico: '▤', log: l.id, titre: `Relevé d'agence ${de(moisDe(per))}${moisDe(per)} — ${l.libelle}`,
-        detail: `${nomAgence(l.id)} envoie son compte rendu de gestion vers le 20`, actions: [['primary', 'Saisir le relevé', 'ajouterReleve', per]] });
-    }
+    [prec, per].forEach((pe) => {
+      if (paiement(l.id, pe)?.valide_le) return;
+      if (pe === prec && !S.data.paiements.some((x) => x.logement === l.id && x.periode < prec)) return;
+      const enRetard = pe === prec || n.getDate() >= 22;
+      t.push({ cls: enRetard ? 'warn' : 'info', ico: '▤', log: l.id, titre: `Relevé d'agence ${de(moisDe(pe))}${moisDe(pe)} à saisir — ${l.libelle}`,
+        detail: enRetard ? `${nomAgence(l.id)} l'envoie normalement vers le 20` : 'À venir : compte rendu de gestion vers le 20 ' + moisDe(pe),
+        actions: [['primary', 'Saisir le relevé', 'ajouterReleve', pe]] });
+    });
   });
   logements().forEach((l) => {
     if (estAgence(l.id)) return;
@@ -289,7 +297,8 @@ function tachesAFaire() {
         actions: [['primary', 'Attestation reçue', 'recueBtn', ''], ['ghost', 'Relancer', 'envoyerA', '', '1']] });
     }
   });
-  return t;
+  const ordre = { danger: 0, warn: 1, info: 2 };
+  return t.sort((x, y) => ordre[x.cls] - ordre[y.cls]);
 }
 
 function vueAccueil() {
