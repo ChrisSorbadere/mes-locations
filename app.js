@@ -1,7 +1,7 @@
 /* Mes Locations — PWA (vanilla JS) */
 'use strict';
 
-const VERSION = '1.6.0';
+const VERSION = '1.7.0';
 const MOIS = ['janvier', 'février', 'mars', 'avril', 'mai', 'juin', 'juillet', 'août', 'septembre', 'octobre', 'novembre', 'décembre'];
 const MOIS_COURT = ['janv.', 'févr.', 'mars', 'avr.', 'mai', 'juin', 'juil.', 'août', 'sept.', 'oct.', 'nov.', 'déc.'];
 const CATEGORIES = ['Taxe foncière', 'Assurance propriétaire (PNO)', 'Travaux & entretien', 'Charges de copropriété', 'Honoraires d\'agence', 'Assurance loyers impayés (GLI)', 'Frais de gestion', 'Intérêts d\'emprunt', 'Autre'];
@@ -704,16 +704,7 @@ function vueBilan() {
       <tr><th>Total</th><th>${euro(b.totalIn)}</th><th>${euro(b.totalOut)}</th><th>${euro(b.net)}</th></tr></tbody></table>
     </details></div>`;
 
-  // Estimation revenus fonciers
-  const horsCharges = Math.max(0, b.totalIn - b.chargesEstim);
-  h += `<p class="section-title">Revenus fonciers ${a} (estimation)</p><div class="card">
-    <div class="line-item"><span class="label">Loyers encaissés (charges comprises)</span><span class="value">${euro(b.totalIn)}</span></div>
-    <div class="line-item"><span class="label">Loyers hors charges (estim.)</span><span class="value">${euro(horsCharges)}</span></div>
-    <div class="line-item"><span class="label">Micro-foncier : base après abattement 30 %</span><span class="value">${euro(horsCharges * 0.7)}</span></div>
-    <div class="line-item"><span class="label">Réel : loyers HC − dépenses</span><span class="value">${euro(horsCharges - b.totalOut)}</span></div>
-    <p class="note">Estimation indicative${S.bilanLog !== 'tout' ? ' pour ce logement seul' : ''}. Les charges sont estimées à partir du montant actuel. Le micro-foncier s'applique si les loyers bruts de tous tes biens ne dépassent pas 15 000 €. À vérifier avec ta déclaration ou un conseiller.</p>
-    <div class="actions"><button class="btn ghost grow" data-act="exportCsv">Exporter ${a} (CSV)</button></div>
-  </div>`;
+  h += vueDeclaration(a);
 
   // Dépenses
   const cats = Object.entries(b.parCat).sort((x, y) => y[1] - x[1]);
@@ -775,6 +766,169 @@ function ouvrirDepense(d) {
       libelle: $('#dLib').value.trim(), montant: montant.toFixed(2), remarque: $('#dRem').value.trim()
     }, 'Dépense enregistrée');
   };
+}
+
+/* ================= Déclaration des revenus fonciers ================= */
+// Lignes de la déclaration 2044 alimentées par les catégories de dépenses
+const LIGNES_2044 = [
+  { n: '221', lib: 'Frais d\'administration et de gestion', cats: ['Honoraires d\'agence', 'Frais de gestion'] },
+  { n: '222', lib: 'Autres frais de gestion (forfait 20 € par logement)', forfait: true },
+  { n: '223', lib: 'Primes d\'assurance', cats: ['Assurance loyers impayés (GLI)', 'Assurance propriétaire (PNO)'] },
+  { n: '224', lib: 'Travaux de réparation, d\'entretien et d\'amélioration', cats: ['Travaux & entretien'] },
+  { n: '227', lib: 'Taxe foncière (hors taxe d\'ordures ménagères)', cats: ['Taxe foncière'] },
+  { n: '229', lib: 'Provisions pour charges de copropriété', cats: ['Charges de copropriété'] },
+  { n: '250', lib: 'Intérêts d\'emprunt', cats: ['Intérêts d\'emprunt'] }
+];
+
+// Revenus fonciers d'une année civile, selon la date d'encaissement (année de réception du loyer)
+function declaration(annee) {
+  const logs = logements().map((l) => l.id);
+  const vide = () => Object.fromEntries(logs.map((id) => [id, 0]));
+  const mois = Array.from({ length: 12 }, (_, i) => ({ i, brut: 0, charges: 0, frais: 0 }));
+  const loyers = vide(), charges = vide(), recu = vide();
+  let estime = false;
+  encaissements().forEach((e) => {
+    const m = /^\d{4}-\d{2}/.test(e.date_reception || '') ? e.date_reception.slice(0, 7) : e.periode;
+    if (!m.startsWith(annee) || !(e.logement in loyers)) return;
+    let ch = e.charges;
+    if (ch === null || ch === undefined) { ch = logement(e.logement)?.charges || 0; estime = true; }
+    ch = Math.min(ch, e.montant);
+    loyers[e.logement] += e.montant - ch; charges[e.logement] += ch; recu[e.logement] = 1;
+    const mo = mois[Number(m.slice(5, 7)) - 1]; mo.brut += e.montant - ch; mo.charges += ch;
+  });
+  const dep = (S.data.depenses || []).filter((d) => d.date.startsWith(annee));
+  const lignes = LIGNES_2044.map((L) => {
+    const v = vide();
+    if (L.forfait) logs.forEach((id) => { if (recu[id]) v[id] = 20; });
+    else dep.filter((d) => L.cats.includes(d.categorie)).forEach((d) => {
+      if (d.logement === 'commun') logs.forEach((id) => { v[id] += d.montant / logs.length; });
+      else if (d.logement in v) v[d.logement] += d.montant;
+      mois[Number(d.date.slice(5, 7)) - 1].frais += d.montant;
+    });
+    return { ...L, v, total: logs.reduce((t, id) => t + v[id], 0) };
+  });
+  mois.forEach((m) => { if (lignes[1].v && m.i === 11) m.frais += lignes[1].total; }); // forfait rattaché à décembre
+  const totFrais = vide();
+  lignes.forEach((L) => logs.forEach((id) => { totFrais[id] += L.v[id]; }));
+  const resultat = Object.fromEntries(logs.map((id) => [id, loyers[id] - totFrais[id]]));
+  const somme = (o) => logs.reduce((t, id) => t + o[id], 0);
+  const nonClasses = dep.filter((d) => !LIGNES_2044.some((L) => L.cats && L.cats.includes(d.categorie)));
+  return { annee, logs, loyers, charges, lignes, totFrais, resultat, mois, estime, nonClasses,
+    tot: { loyers: somme(loyers), charges: somme(charges), frais: somme(totFrais), resultat: somme(resultat) } };
+}
+
+function vueDeclaration(a) {
+  const d = declaration(a);
+  const libL = (id) => esc(logement(id)?.libelle || id);
+  const ligne = (n, lib, o, total, fort) => `<div class="line-item decl-l${fort ? ' fort' : ''}"><span class="label">${n ? `<b>${n}</b> ` : ''}${esc(lib)}
+      <small>${d.logs.map((id) => `${libL(id)} ${euro(o[id])}`).join(' · ')}</small></span><span class="value">${euro(total)}</span></div>`;
+  let h = `<p class="section-title">Déclaration ${Number(a) + 1} · revenus fonciers ${a}</p><div class="card">
+    <p class="hint" style="margin-top:0">Montants à reporter sur la déclaration 2044 (régime réel). Loyers comptés à leur date d'encaissement, hors charges récupérées.</p>
+    ${ligne('211', 'Loyers bruts encaissés', d.loyers, d.tot.loyers)}`;
+  d.lignes.forEach((L) => {
+    if (!L.total && !['221', '222', '223', '224', '227'].includes(L.n)) return;
+    h += ligne(L.n, L.lib, L.v, L.total);
+  });
+  h += `${ligne('240', 'Total des frais et charges', d.totFrais, d.tot.frais, true)}
+    ${ligne('', 'Résultat foncier', d.resultat, d.tot.resultat, true)}
+    <div class="line-item"><span class="label">${d.tot.resultat >= 0 ? 'Bénéfice foncier à reporter (2042, case 4BA)' : 'Déficit foncier (voir notice 2044, cases 4BB / 4BC)'}</span><span class="value"><b>${euro(Math.abs(d.tot.resultat))}</b></span></div>
+    <div class="line-item"><span class="label">Charges récupérées auprès des locataires (non déclarées)</span><span class="value">${euro(d.tot.charges)}</span></div>
+    <details class="plain"><summary>Mois par mois</summary>
+      <table class="data"><thead><tr><th>Mois</th><th>Loyers HC</th><th>Charges</th><th>Frais</th><th>Résultat</th></tr></thead><tbody>
+      ${d.mois.map((m) => `<tr><td>${cap(MOIS[m.i])}</td><td>${euro(m.brut)}</td><td>${euro(m.charges)}</td><td>${euro(m.frais)}</td><td>${euro(m.brut - m.frais)}</td></tr>`).join('')}
+      <tr><th>Total</th><th>${euro(d.tot.loyers)}</th><th>${euro(d.tot.charges)}</th><th>${euro(d.tot.frais)}</th><th>${euro(d.tot.resultat)}</th></tr></tbody></table>
+    </details>
+    <p class="note">${d.tot.loyers + d.tot.charges > 15000 ? 'Loyers bruts supérieurs à 15 000 € : le régime réel (2044) s\'applique. ' : 'Loyers bruts inférieurs à 15 000 € : le micro-foncier (abattement de 30 %) est aussi possible. '}`
+    + `Taxe foncière : saisis-la sans la taxe d'ordures ménagères. Dépenses communes réparties à parts égales entre les logements. Le forfait de 20 € est compté en décembre.`
+    + `${d.estime ? ' Certains mois viennent de l\'historique du tableur : leurs charges sont estimées.' : ''}`
+    + `${d.nonClasses.length ? ` ${d.nonClasses.length} dépense(s) en catégorie « Autre » non comptée(s) : vérifie si elles sont déductibles.` : ''}`
+    + ` Document d'aide, à vérifier avec la notice ou un conseiller.</p>
+    <div class="actions"><button class="btn ghost grow" data-act="exportDeclCsv">Export CSV</button><button class="btn ghost grow" data-act="exportDeclPdf">Export PDF</button></div>
+  </div>`;
+  return h;
+}
+
+function telecharger(blob, nom) {
+  const url = URL.createObjectURL(blob);
+  const lien = document.createElement('a');
+  lien.href = url; lien.download = nom;
+  document.body.appendChild(lien); lien.click(); lien.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 4000);
+}
+
+function tableauxDeclaration(d) {
+  const f = (n) => (Math.round(n * 100) / 100).toFixed(2).replace('.', ',');
+  const lib = (id) => logement(id)?.libelle || id;
+  const tete = ['Ligne 2044', ...d.logs.map(lib), 'Total'];
+  const rows = [['211 - Loyers bruts encaissés', ...d.logs.map((id) => f(d.loyers[id])), f(d.tot.loyers)]];
+  d.lignes.forEach((L) => { if (L.total || ['221', '222', '223', '224', '227'].includes(L.n)) rows.push([L.n + ' - ' + L.lib, ...d.logs.map((id) => f(L.v[id])), f(L.total)]); });
+  rows.push(['240 - Total des frais et charges', ...d.logs.map((id) => f(d.totFrais[id])), f(d.tot.frais)]);
+  rows.push(['Résultat foncier', ...d.logs.map((id) => f(d.resultat[id])), f(d.tot.resultat)]);
+  const mt = ['Mois', 'Loyers HC', 'Charges récupérées', 'Frais déductibles', 'Résultat'];
+  const mr = d.mois.map((m) => [cap(MOIS[m.i]), f(m.brut), f(m.charges), f(m.frais), f(m.brut - m.frais)]);
+  mr.push(['Total', f(d.tot.loyers), f(d.tot.charges), f(d.tot.frais), f(d.tot.resultat)]);
+  return { tete, rows, mt, mr, f };
+}
+
+function exporterDeclCsv() {
+  const d = declaration(S.bilanAnnee);
+  const t = tableauxDeclaration(d);
+  const lignes = [['Revenus fonciers ' + d.annee + ' (déclaration ' + (Number(d.annee) + 1) + ')'], [], t.tete, ...t.rows, [],
+    [d.tot.resultat >= 0 ? 'Bénéfice foncier (2042 case 4BA)' : 'Déficit foncier', '', '', t.f(Math.abs(d.tot.resultat))], [], t.mt, ...t.mr, [],
+    ['Dépenses détaillées'], ['Date', 'Logement', 'Catégorie', 'Libellé', 'Montant']];
+  (S.data.depenses || []).filter((x) => x.date.startsWith(d.annee)).sort((x, y) => x.date.localeCompare(y.date)).forEach((x) =>
+    lignes.push([x.date, x.logement === 'commun' ? 'Les deux' : logement(x.logement)?.libelle || x.logement, x.categorie, x.libelle, t.f(x.montant)]));
+  const csv = '﻿' + lignes.map((r) => r.map((c) => `"${String(c ?? '').replace(/"/g, '""')}"`).join(';')).join('\r\n');
+  telecharger(new Blob([csv], { type: 'text/csv;charset=utf-8' }), `revenus-fonciers-${d.annee}.csv`);
+  toast('Fichier CSV téléchargé');
+}
+
+function chargerScript(src) {
+  return new Promise((ok, ko) => {
+    if (document.querySelector(`script[src="${src}"]`)) return ok();
+    const s = document.createElement('script'); s.src = src; s.onload = ok; s.onerror = () => ko(new Error('Impossible de charger le module PDF (connexion ?)'));
+    document.head.appendChild(s);
+  });
+}
+
+async function exporterDeclPdf() {
+  chargement(true, 'Création du PDF…');
+  try {
+    await chargerScript('lib/jspdf.umd.min.js');
+    await chargerScript('lib/jspdf.plugin.autotable.min.js');
+    const d = declaration(S.bilanAnnee);
+    const t = tableauxDeclaration(d);
+    const pdf = new window.jspdf.jsPDF({ unit: 'mm', format: 'a4' });
+    const net = (x) => String(x).replace(/[  ]/g, ' ');
+    pdf.setFont('helvetica', 'bold'); pdf.setFontSize(16);
+    pdf.text(net('Revenus fonciers ' + d.annee), 14, 18);
+    pdf.setFont('helvetica', 'normal'); pdf.setFontSize(10); pdf.setTextColor(90);
+    pdf.text(net('Déclaration ' + (Number(d.annee) + 1) + ' · formulaire 2044 (régime réel) · édité le ' + new Date().toLocaleDateString('fr-FR')), 14, 25);
+    pdf.setTextColor(0);
+    const style = { font: 'helvetica', fontSize: 9.5, cellPadding: 2 };
+    const droite = Object.fromEntries(t.tete.map((_, i) => [i, { halign: i ? 'right' : 'left' }]));
+    pdf.autoTable({ startY: 31, head: [t.tete], body: t.rows, styles: style, headStyles: { fillColor: [31, 107, 87] }, columnStyles: droite,
+      didParseCell: (c) => { if (c.section === 'body' && c.row.index >= t.rows.length - 2) c.cell.styles.fontStyle = 'bold'; } });
+    let y = pdf.lastAutoTable.finalY + 8;
+    pdf.setFont('helvetica', 'bold'); pdf.setFontSize(11);
+    pdf.text(net((d.tot.resultat >= 0 ? 'Bénéfice foncier à reporter (2042, case 4BA) : ' : 'Déficit foncier : ') + euro(Math.abs(d.tot.resultat))), 14, y);
+    pdf.setFont('helvetica', 'normal'); pdf.setFontSize(9.5);
+    pdf.text(net('Charges récupérées auprès des locataires (non déclarées) : ' + euro(d.tot.charges)), 14, y + 6);
+    pdf.autoTable({ startY: y + 12, head: [t.mt], body: t.mr, styles: style, headStyles: { fillColor: [31, 107, 87] },
+      columnStyles: { 1: { halign: 'right' }, 2: { halign: 'right' }, 3: { halign: 'right' }, 4: { halign: 'right' } },
+      didParseCell: (c) => { if (c.section === 'body' && c.row.index === t.mr.length - 1) c.cell.styles.fontStyle = 'bold'; } });
+    const dep = (S.data.depenses || []).filter((x) => x.date.startsWith(d.annee)).sort((x, z) => x.date.localeCompare(z.date));
+    if (dep.length) {
+      pdf.autoTable({ startY: pdf.lastAutoTable.finalY + 8, head: [['Date', 'Logement', 'Catégorie', 'Libellé', 'Montant']],
+        body: dep.map((x) => [x.date.split('-').reverse().join('/'), x.logement === 'commun' ? 'Les deux' : logement(x.logement)?.libelle || x.logement, x.categorie, x.libelle, t.f(x.montant)]),
+        styles: style, headStyles: { fillColor: [120, 120, 120] }, columnStyles: { 4: { halign: 'right' } } });
+    }
+    y = pdf.lastAutoTable.finalY + 8;
+    pdf.setFontSize(8); pdf.setTextColor(110);
+    pdf.text(pdf.splitTextToSize('Loyers comptés à leur date d\'encaissement, hors charges récupérées. Dépenses communes réparties à parts égales. Taxe foncière hors taxe d\'ordures ménagères. Document d\'aide établi par l\'application Mes Locations, à vérifier avec la notice 2044.', 182), 14, Math.min(y, 285));
+    telecharger(pdf.output('blob'), `revenus-fonciers-${d.annee}.pdf`);
+    toast('PDF téléchargé');
+  } catch (e) { toast(e.message, true); } finally { chargement(false); }
 }
 
 function exporterCsv() {
@@ -1074,6 +1228,8 @@ document.addEventListener('click', async (e) => {
       break;
     case 'voirDepense': ouvrirDepense(S.data.depenses.find((d) => d.id === t.dataset.v)); break;
     case 'exportCsv': exporterCsv(); break;
+    case 'exportDeclCsv': exporterDeclCsv(); break;
+    case 'exportDeclPdf': exporterDeclPdf(); break;
     case 'theme': ecrireLS(LS_THEME, t.dataset.v); appliquerTheme(t.dataset.v); rendre(); break;
     case 'envoyerQ': {
       const l = logement(log), p = paiement(log, per);

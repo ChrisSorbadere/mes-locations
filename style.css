@@ -352,3 +352,10 @@ input[type="date"].input, input[type="month"].input { -webkit-appearance: none; 
 .todo.alerte .todo-item.urg-warn::before { background: var(--warn); }
 .todo.alerte .todo-item.urg-info::before { background: var(--accent); }
 .todo.alerte .todo-txt small { color: var(--ink); opacity: .78; }
+table.decl td:first-child { min-width: 170px; text-align: left; }
+table.decl td, table.decl th { white-space: nowrap; }
+table.decl td:first-child { white-space: normal; }
+table.decl tr.tot td { font-weight: 600; border-top: 2px solid var(--line); }
+.decl-l .label small { display: block; font-size: 12px; color: var(--muted); margin-top: 2px; font-weight: 400; }
+.decl-l .value { white-space: nowrap; align-self: flex-start; }
+.decl-l.fort .label, .decl-l.fort .value { font-weight: 700; }
