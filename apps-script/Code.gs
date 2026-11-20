@@ -119,6 +119,8 @@ function schema_() {
   s.push(['comptes_sync', 'bool', 'TRUE', 'Envoyer le total net des loyers du mois dans l\'appli Comptes (ligne « Loyers France »)', true]);
   s.push(['comptes_depuis', 'text', '2026-08', 'Premier mois synchronisé avec l\'appli Comptes (aaaa-mm)', false]);
   s.push(['comptes_derniere_sync', 'text', '', 'Dernière mise à jour de l\'appli Comptes (auto)', false]);
+  s.push(['impots_sync', 'bool', 'TRUE', 'Écrire le résultat foncier mensuel dans le fichier « Déclarations impôts » (colonne Loyers France)', true]);
+  s.push(['impots_depuis', 'text', '2026', 'Première année mise à jour dans le fichier impôts (les années déjà déclarées ne sont pas touchées)', false]);
   s.push(['token', 'text', '', 'CODE SECRET de l\'application — ne pas partager', false]);
   return s;
 }
@@ -1401,7 +1403,11 @@ function synchroniserComptes_() {
   const tot = totauxLoyersParMois_();
   const changes0 = [];
   const ssC = SpreadsheetApp.openById(COMPTES_SS_ID);
-  try { if (publierDeclarationComptes_(ssC)) changes0.push('déclaration'); } catch (err) { changes0.push('déclaration : ' + err.message); }
+  const declLignes = lignesDeclaration_();
+  try { if (publierDeclarationComptes_(ssC, declLignes)) changes0.push('déclaration'); } catch (err) { changes0.push('déclaration : ' + err.message); }
+  if (bool_(P.impots_sync)) {
+    try { synchroniserImpots_(ssC, declLignes, P).forEach(function (x) { changes0.push(x); }); } catch (err) { changes0.push('fichier impôts : ' + err.message); }
+  }
   const sh = ssC.getSheetByName(COMPTES_FEUILLE);
   if (!sh) throw new Error('feuille « ' + COMPTES_FEUILLE + ' » introuvable dans le classeur Comptes');
   const n = sh.getLastRow();
@@ -1425,7 +1431,7 @@ function synchroniserComptes_() {
     }
     changes.push(m + ' : ' + euroTxt_(tot[m]));
   });
-  if (changes0.length && changes0[0] !== 'déclaration') changes.push(changes0[0]);
+  changes0.forEach(function (x) { if (x !== 'déclaration') changes.push(x); });
   if (changes.length) {
     ecrireParam_('comptes_derniere_sync', Utilities.formatDate(new Date(), tz, 'dd/MM/yyyy HH:mm') + ' — ' + changes.join(', '));
   }
@@ -1520,10 +1526,10 @@ function lignesDeclaration_() {
   return out;
 }
 
-function publierDeclarationComptes_(ss) {
+function publierDeclarationComptes_(ss, declLignes) {
   const logs = Object.keys(LOGEMENTS);
   const entete = ['Annee', 'Mois', 'Cle', 'Libelle'].concat(logs.map(function (id) { return LOGEMENTS[id].libelle; }), ['Total']);
-  const lignes = [entete].concat(lignesDeclaration_());
+  const lignes = [entete].concat(declLignes || lignesDeclaration_());
   let sh = ss.getSheetByName('Fin_Declaration');
   if (!sh) { sh = ss.insertSheet('Fin_Declaration'); sh.hideSheet(); }
   const n = sh.getLastRow(), c = sh.getLastColumn();
@@ -1533,6 +1539,113 @@ function publierDeclarationComptes_(ss) {
   sh.clearContents();
   sh.getRange(1, 1, texte.length, entete.length).setNumberFormat('@').setValues(texte);
   return true;
+}
+
+// ---------- Fichier « DÉCLARATIONS IMPÔTS FRANCE & ESPAGNE » (onglets « Revenus AAAA ») ----------
+const IMPOTS_SS_ID = '1jThZTb0tiJE__FGkaNk9M_Qflk4QBk3tpwCq7f7z5gg';
+
+// Repère la structure d'un onglet « Revenus AAAA » : ligne de janvier, colonnes de revenus (France / hors France), revenus du conjoint
+function structureRevenus_(v) {
+  const txt = function (r, c) { return r >= 0 && r < v.length && c < v[r].length ? String(v[r][c]).trim() : ''; };
+  let lj = -1;
+  for (let r = 0; r < v.length && lj < 0; r++) for (let c = 0; c < v[r].length; c++) if (/^janvier$/i.test(txt(r, c))) { lj = r; break; }
+  if (lj < 2) throw new Error('ligne « janvier » introuvable');
+  const nbCol = Math.max.apply(null, v.map(function (r) { return r.length; }));
+  // Colonnes de synthèse : à partir de la première cellule « SYNTHÈSE » ou « VOIR »
+  let fin = nbCol;
+  for (let r = 0; r < lj; r++) for (let c = 0; c < nbCol; c++) if (/synth[èe]se|voir/i.test(txt(r, c))) fin = Math.min(fin, c);
+  // Groupe (France / hors France) : en-tête au-dessus, recopié vers la droite (cellules fusionnées)
+  const groupe = []; let g = '';
+  for (let c = 0; c < fin; c++) {
+    for (let r = 0; r < lj - 1; r++) {
+      const t = txt(r, c).replace(/^[^A-Za-zÀ-ÿ]+/, '');
+      if (/^REVENUS\s+HORS/i.test(t)) g = 'hors'; else if (/^REVENUS\s+FRAN[ÇC]AIS/i.test(t)) g = 'france';
+    }
+    groupe.push(g);
+  }
+  // Libellé : ligne juste au-dessus de janvier, sinon la précédente (fusion)
+  const cols = [];
+  const estMoisCol = function (c) { return /^janvier$/i.test(txt(lj, c)); };
+  for (let c = 0; c < fin; c++) {
+    if (estMoisCol(c) || !groupe[c]) continue;
+    let nom = '', src = -1;
+    for (let k = c; k >= 0 && !nom; k--) {
+      nom = txt(lj - 1, k) || txt(lj - 2, k); src = k;
+      if (estMoisCol(k)) break;
+    }
+    const aDesDonnees = v.slice(lj, lj + 12).some(function (r) { return typeof r[c] === 'number'; });
+    if (!nom || !(aDesDonnees || src === c || (src === c - 1 && estMoisCol(src)))) continue;
+    cols.push({ col: c, nom: nom, groupe: groupe[c], loyersFrance: /loyers?\s*france/i.test(nom) });
+  }
+  let conjoint = null, conjointNom = '';
+  for (let r = 0; r < v.length; r++) for (let c = fin; c < nbCol; c++) {
+    const m = txt(r, c).match(/^REVENUS\s+(?!FRAN|HORS)(.+?)\s*:?$/i);
+    if (m && conjoint === null) {
+      for (let k = c + 1; k < nbCol; k++) if (typeof v[r][k] === 'number') { conjoint = v[r][k]; conjointNom = m[1].trim(); break; }
+    }
+  }
+  return { lj: lj, cols: cols, conjoint: conjoint, conjointNom: conjointNom };
+}
+
+// Écrit le résultat foncier mensuel dans « Loyers France » (années ≥ impots_depuis) et publie les revenus dans Comptes (Fin_Revenus)
+function synchroniserImpots_(ssC, declLignes, P) {
+  const tz = Session.getScriptTimeZone();
+  const courant = Utilities.formatDate(new Date(), tz, 'yyyy-MM');
+  const depuis = String(P.impots_depuis || '2026');
+  const resultat = {}; // 'aaaa-mm' -> loyers HC − frais
+  declLignes.forEach(function (r) {
+    if (!r[1]) return;
+    const k = r[0] + '-' + r[1];
+    const tot = Number(r[r.length - 1]) || 0;
+    if (r[2] === 'loyers') resultat[k] = (resultat[k] || 0) + tot;
+    if (r[2] === 'frais') resultat[k] = (resultat[k] || 0) - tot;
+  });
+  const ssI = SpreadsheetApp.openById(IMPOTS_SS_ID);
+  const sortie = [['Annee', 'Groupe', 'Nom', 'Mois', 'Montant']];
+  const journal = [];
+  ssI.getSheets().forEach(function (sh) {
+    const m = sh.getName().trim().match(/^Revenus\s+(\d{4})$/i);
+    if (!m) return;
+    const a = m[1];
+    const v = sh.getDataRange().getValues();
+    let st;
+    try { st = structureRevenus_(v); } catch (err) { journal.push(sh.getName() + ' : ' + err.message); return; }
+    st.cols.forEach(function (c) {
+      if (c.loyersFrance && a >= depuis) {
+        let modif = 0;
+        for (let i = 0; i < 12; i++) {
+          const k = a + '-' + ('0' + (i + 1)).slice(-2);
+          if (k > courant) break;
+          const val = rond_(resultat[k] || 0);
+          const cell = v[st.lj + i][c.col];
+          if (typeof cell === 'number' && Math.abs(cell - val) < 0.005) continue;
+          if (cell === '' && !val) continue;
+          sh.getRange(st.lj + i + 1, c.col + 1).setValue(val);
+          v[st.lj + i][c.col] = val; modif++;
+        }
+        const tete = sh.getRange(st.lj + 1, c.col + 1); // cellule de janvier
+        const note = 'Rempli automatiquement par Mes Locations : résultat foncier du mois (loyers encaissés hors charges − frais déductibles, déclaration 2044). Ne pas saisir à la main.';
+        if (tete.getNote() !== note) tete.setNote(note);
+        if (modif) journal.push('impôts ' + a + ' : ' + modif + ' mois');
+      }
+      for (let i = 0; i < 12; i++) {
+        const x = v[st.lj + i][c.col];
+        if (typeof x === 'number' && x) sortie.push([a, c.groupe, c.loyersFrance ? 'Revenus fonciers (résultat 2044)' : c.nom, ('0' + (i + 1)).slice(-2), rond_(x)]);
+      }
+    });
+    if (typeof st.conjoint === 'number') sortie.push([a, 'conjoint', 'Revenus ' + st.conjointNom, '', rond_(st.conjoint)]);
+  });
+  // Publication dans Comptes
+  let fr = ssC.getSheetByName('Fin_Revenus');
+  if (!fr) { fr = ssC.insertSheet('Fin_Revenus'); fr.hideSheet(); }
+  const texte = sortie.map(function (r) { return r.map(function (x) { return typeof x === 'number' ? x.toFixed(2) : String(x); }); });
+  const n = fr.getLastRow(), nc = fr.getLastColumn();
+  const avant = n && nc ? JSON.stringify(fr.getRange(1, 1, n, nc).getDisplayValues()) : '';
+  if (avant !== JSON.stringify(texte)) {
+    fr.clearContents();
+    fr.getRange(1, 1, texte.length, 5).setNumberFormat('@').setValues(texte);
+  }
+  return journal;
 }
 
 /** À exécuter une fois depuis l'éditeur pour vérifier l'accès au classeur Comptes et tout mettre à jour. */
