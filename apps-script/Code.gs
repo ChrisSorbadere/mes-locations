@@ -1399,7 +1399,10 @@ function synchroniserComptes_() {
   const tz = Session.getScriptTimeZone();
   const courant = Utilities.formatDate(new Date(), tz, 'yyyy-MM');
   const tot = totauxLoyersParMois_();
-  const sh = SpreadsheetApp.openById(COMPTES_SS_ID).getSheetByName(COMPTES_FEUILLE);
+  const changes0 = [];
+  const ssC = SpreadsheetApp.openById(COMPTES_SS_ID);
+  try { if (publierDeclarationComptes_(ssC)) changes0.push('déclaration'); } catch (err) { changes0.push('déclaration : ' + err.message); }
+  const sh = ssC.getSheetByName(COMPTES_FEUILLE);
   if (!sh) throw new Error('feuille « ' + COMPTES_FEUILLE + ' » introuvable dans le classeur Comptes');
   const n = sh.getLastRow();
   const valeurs = n >= 2 ? sh.getRange(2, 1, n - 1, 3).getValues() : [];
@@ -1422,10 +1425,114 @@ function synchroniserComptes_() {
     }
     changes.push(m + ' : ' + euroTxt_(tot[m]));
   });
+  if (changes0.length && changes0[0] !== 'déclaration') changes.push(changes0[0]);
   if (changes.length) {
     ecrireParam_('comptes_derniere_sync', Utilities.formatDate(new Date(), tz, 'dd/MM/yyyy HH:mm') + ' — ' + changes.join(', '));
   }
   return changes;
+}
+
+// ---------- Déclaration des revenus fonciers (2044), publiée aussi dans l'appli Comptes ----------
+const LIGNES_2044 = [
+  { n: '221', lib: 'Frais d\'administration et de gestion', cats: ['Honoraires d\'agence', 'Frais de gestion'] },
+  { n: '222', lib: 'Autres frais de gestion (forfait 20 € par logement)', forfait: true },
+  { n: '223', lib: 'Primes d\'assurance', cats: ['Assurance loyers impayés (GLI)', 'Assurance propriétaire (PNO)'] },
+  { n: '224', lib: 'Travaux de réparation, d\'entretien et d\'amélioration', cats: ['Travaux & entretien'] },
+  { n: '227', lib: 'Taxe foncière (hors taxe d\'ordures ménagères)', cats: ['Taxe foncière'] },
+  { n: '229', lib: 'Provisions pour charges de copropriété', cats: ['Charges de copropriété'] },
+  { n: '250', lib: 'Intérêts d\'emprunt', cats: ['Intérêts d\'emprunt'] }
+];
+
+// Encaissements (même logique que l'application) : historique de Principale, remplacé par les paiements validés
+function encaissementsServeur_() {
+  const m = {};
+  lireHistorique_().forEach(function (h) {
+    const per = h.date.slice(0, 7);
+    Object.keys(LOGEMENTS).forEach(function (id) {
+      if (h[id] > 0) m[id + '|' + per] = { logement: id, periode: per, montant: h[id], date_reception: '', charges: null };
+    });
+  });
+  lirePaiements_().forEach(function (p) {
+    if (!p.valide_le) return;
+    m[p.logement + '|' + p.periode] = { logement: p.logement, periode: p.periode,
+      montant: Number(String(p.montant).replace(',', '.')) || 0, date_reception: p.date_reception,
+      charges: p.charges !== '' && p.charges !== undefined ? Number(String(p.charges).replace(',', '.')) || 0 : null };
+  });
+  return Object.keys(m).map(function (k) { return m[k]; });
+}
+
+// Lignes à écrire : [Année, Mois (vide = annuel), Clé, Libellé, <un montant par logement>, Total]
+function lignesDeclaration_() {
+  const logs = Object.keys(LOGEMENTS);
+  const chargesActuelles = {};
+  logs.forEach(function (id) { chargesActuelles[id] = locataire_(id).charges; });
+  const enc = encaissementsServeur_();
+  const dep = lireDepenses_();
+  const annees = {};
+  enc.forEach(function (e) { annees[(/^\d{4}/.test(e.date_reception) ? e.date_reception : e.periode).slice(0, 4)] = 1; });
+  dep.forEach(function (d) { annees[d.date.slice(0, 4)] = 1; });
+  const out = [];
+  Object.keys(annees).sort().forEach(function (a) {
+    const zero = function () { const o = {}; logs.forEach(function (id) { o[id] = 0; }); return o; };
+    const loyers = zero(), charges = zero(), recu = zero(), totFrais = zero();
+    const mois = []; for (let i = 0; i < 12; i++) mois.push({ brut: zero(), charges: zero(), frais: zero() });
+    let estime = 0;
+    enc.forEach(function (e) {
+      const m = /^\d{4}-\d{2}/.test(e.date_reception) ? e.date_reception.slice(0, 7) : e.periode;
+      if (m.slice(0, 4) !== a) return;
+      let ch = e.charges;
+      if (ch === null) { ch = chargesActuelles[e.logement] || 0; estime = 1; }
+      ch = Math.min(ch, e.montant);
+      loyers[e.logement] += e.montant - ch; charges[e.logement] += ch; recu[e.logement] = 1;
+      const mo = mois[Number(m.slice(5, 7)) - 1];
+      mo.brut[e.logement] += e.montant - ch; mo.charges[e.logement] += ch;
+    });
+    const depA = dep.filter(function (d) { return d.date.slice(0, 4) === a; });
+    const lignes = LIGNES_2044.map(function (L) {
+      const v = zero();
+      if (L.forfait) { logs.forEach(function (id) { if (recu[id]) { v[id] = 20; mois[11].frais[id] += 20; } }); }
+      else depA.filter(function (d) { return L.cats.indexOf(d.categorie) >= 0; }).forEach(function (d) {
+        const mo = mois[Number(d.date.slice(5, 7)) - 1];
+        if (d.logement === 'commun') logs.forEach(function (id) { v[id] += d.montant / logs.length; mo.frais[id] += d.montant / logs.length; });
+        else if (d.logement in v) { v[d.logement] += d.montant; mo.frais[d.logement] += d.montant; }
+      });
+      logs.forEach(function (id) { totFrais[id] += v[id]; });
+      return { n: L.n, lib: L.lib, v: v };
+    });
+    const ligne = function (mo, cle, lib, o) {
+      const vals = logs.map(function (id) { return rond_(o[id]); });
+      out.push([a, mo, cle, lib].concat(vals, [rond_(vals.reduce(function (t, x) { return t + x; }, 0))]));
+    };
+    ligne('', '211', 'Loyers bruts encaissés', loyers);
+    lignes.forEach(function (L) { ligne('', L.n, L.lib, L.v); });
+    ligne('', '240', 'Total des frais et charges', totFrais);
+    const res = zero(); logs.forEach(function (id) { res[id] = loyers[id] - totFrais[id]; });
+    ligne('', 'resultat', 'Résultat foncier', res);
+    ligne('', 'charges', 'Charges récupérées (non déclarées)', charges);
+    if (estime) ligne('', 'estime', 'Charges estimées pour certains mois (historique)', zero());
+    mois.forEach(function (mo, i) {
+      const n = ('0' + (i + 1)).slice(-2);
+      ligne(n, 'loyers', 'Loyers hors charges', mo.brut);
+      ligne(n, 'charges', 'Charges récupérées', mo.charges);
+      ligne(n, 'frais', 'Frais déductibles', mo.frais);
+    });
+  });
+  return out;
+}
+
+function publierDeclarationComptes_(ss) {
+  const logs = Object.keys(LOGEMENTS);
+  const entete = ['Annee', 'Mois', 'Cle', 'Libelle'].concat(logs.map(function (id) { return LOGEMENTS[id].libelle; }), ['Total']);
+  const lignes = [entete].concat(lignesDeclaration_());
+  let sh = ss.getSheetByName('Fin_Declaration');
+  if (!sh) { sh = ss.insertSheet('Fin_Declaration'); sh.hideSheet(); }
+  const n = sh.getLastRow(), c = sh.getLastColumn();
+  const avant = n && c ? JSON.stringify(sh.getRange(1, 1, n, c).getDisplayValues()) : '';
+  const texte = lignes.map(function (r) { return r.map(function (x) { return typeof x === 'number' ? x.toFixed(2) : String(x); }); });
+  if (avant === JSON.stringify(texte)) return false;
+  sh.clearContents();
+  sh.getRange(1, 1, texte.length, entete.length).setNumberFormat('@').setValues(texte);
+  return true;
 }
 
 /** À exécuter une fois depuis l'éditeur pour vérifier l'accès au classeur Comptes et tout mettre à jour. */
