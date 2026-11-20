@@ -1654,7 +1654,7 @@ function testerComptes() {
   const tot = totauxLoyersParMois_();
   const lignes = Object.keys(tot).sort().filter(function (m) { return m >= String(lireParams_().comptes_depuis || '2026-08'); })
     .map(function (m) { return m + ' : ' + euroTxt_(tot[m]); });
-  const msg = 'Totaux nets des loyers :\n' + lignes.join('\n') + '\n\n' + (ch.length ? 'Mis à jour dans Comptes : ' + ch.length + ' mois.' : 'Comptes était déjà à jour.');
+  const msg = 'Totaux nets des loyers :\n' + lignes.join('\n') + '\n\n' + (ch.length ? 'Mis à jour :\n' + ch.join('\n') : 'Comptes et le fichier impôts étaient déjà à jour.');
   try { SpreadsheetApp.getUi().alert(msg); } catch (e) { Logger.log(msg); }
 }
 
