@@ -1,7 +1,7 @@
 /* Mes Locations — PWA (vanilla JS) */
 'use strict';
 
-const VERSION = '1.4.1';
+const VERSION = '1.5.0';
 const MOIS = ['janvier', 'février', 'mars', 'avril', 'mai', 'juin', 'juillet', 'août', 'septembre', 'octobre', 'novembre', 'décembre'];
 const MOIS_COURT = ['janv.', 'févr.', 'mars', 'avr.', 'mai', 'juin', 'juil.', 'août', 'sept.', 'oct.', 'nov.', 'déc.'];
 const CATEGORIES = ['Taxe foncière', 'Assurance propriétaire (PNO)', 'Travaux & entretien', 'Charges de copropriété', 'Honoraires d\'agence', 'Assurance loyers impayés (GLI)', 'Frais de gestion', 'Intérêts d\'emprunt', 'Autre'];
@@ -548,7 +548,10 @@ function ouvrirReleve(r, id, per) {
   const fGestion = fraisDer.find((d) => /gestion/i.test(d.libelle));
   const fGli = fraisDer.find((d) => /GLI/.test(d.categorie));
   const v = (x) => x ? String(Number(x).toFixed(2)).replace('.', ',') : '';
-  ouvrirSheet(`<h3>Nouveau relevé d'agence</h3><p class="sub">${esc(logement(id).libelle)} · reporte les montants du compte rendu de gestion.</p>
+  ouvrirSheet(`<h3>Nouveau relevé d'agence</h3><p class="sub">${esc(logement(id).libelle)} · choisis le PDF du compte rendu de gestion : les montants sont lus automatiquement.</p>
+    <label class="btn primary block" style="cursor:pointer;margin-bottom:6px">Lire le PDF du relevé
+      <input type="file" accept="application/pdf" id="rLire" hidden></label>
+    <p class="hint" style="text-align:center;margin:6px 0 14px">ou saisis les montants à la main :</p>
     <div class="grid2">
       <label class="field"><span>Date du relevé</span><input class="input" type="date" id="rDate" value="${isoJour(maintenant())}"></label>
       <label class="field"><span>Mois du loyer</span><input class="input" type="month" id="rPer" value="${esc(per || periodeCourante())}"></label>
@@ -570,6 +573,20 @@ function ouvrirReleve(r, id, per) {
   };
   document.querySelectorAll('.rCalc').forEach((i) => i.addEventListener('input', calc));
   calc();
+  $('#rLire').onchange = async (e) => {
+    let pdf;
+    try { pdf = await lirePdf(e.target.files[0]); } catch (err) { return toast(err.message, true); }
+    if (!pdf) return;
+    chargement(true, 'Lecture du relevé…');
+    try {
+      const r = await api('analyserReleve', { logement: id, pdf });
+      chargement(false);
+      ouvrirReleveLu(id, r, pdf);
+    } catch (err) {
+      chargement(false);
+      toast(err.message + ' — saisis les montants à la main', true);
+    }
+  };
   $('#rOk').onclick = async () => {
     const loyer = num($('#rLoyer').value);
     if (!(loyer > 0)) return toast('Loyer invalide', true);
@@ -585,6 +602,30 @@ function ouvrirReleve(r, id, per) {
       lignes: [{ periode: $('#rPer').value, loyer: loyer.toFixed(2), provisions: num($('#rProv').value).toFixed(2) }], frais
     }, 'Relevé enregistré');
   };
+}
+
+// Résultat de la lecture d'un PDF : résumé + enregistrement en un geste
+function ouvrirReleveLu(id, r, pdf) {
+  const ligne = (l, v, cls = '') => `<div class="line-item"><span class="label">${l}</span><span class="value ${cls}" style="white-space:nowrap">${v}</span></div>`;
+  const rempl = (r.existants || []).length > 0;
+  let h = `<h3>Relevé du ${esc(fmtJour(parseIso(r.date)))} ${esc(r.date.slice(0, 4))}</h3>
+    <p class="sub">${esc(logement(id).libelle)} · montants lus dans le PDF, vérifiés (le total correspond au net viré).</p>
+    <div class="card" style="padding:4px 16px">`;
+  r.lignes.forEach((l) => {
+    h += ligne('Loyer ' + esc(labelPeriode(l.periode)), euro(l.loyer));
+    if (num(l.provisions)) h += ligne('Provisions / charges' + (l.detail ? ' <small>(' + esc(l.detail) + ')</small>' : ''), euro(l.provisions));
+  });
+  r.frais.forEach((f) => { const m = num(f.montant); h += ligne(esc(f.libelle), (m < 0 ? '+ ' : '− ') + euro(Math.abs(m))); });
+  h += ligne('<b>Net viré</b>', '<b>' + euro(r.net) + '</b>') + `</div>`;
+  if (rempl) h += `<p class="hint">Un relevé existe déjà pour ce mois : il sera remplacé par ces chiffres.</p>`;
+  h += `<div class="actions"><button class="btn ghost grow" id="rlAnnul">Annuler</button>
+    <button class="btn primary grow" id="rlOk">${rempl ? 'Remplacer et enregistrer' : 'Enregistrer'}</button></div>`;
+  ouvrirSheet(h);
+  $('#rlAnnul').onclick = fermerSheet;
+  $('#rlOk').onclick = () => action('Enregistrement et archivage du PDF…', 'ajouterReleve', {
+    logement: id, date: r.date, net: r.net, lignes: r.lignes, frais: r.frais, pdf, remplacer: rempl,
+    remarque: 'Lu depuis le PDF'
+  }, rempl ? 'Relevé remplacé' : 'Relevé enregistré');
 }
 
 /* ================= Bilan ================= */
@@ -838,7 +879,11 @@ function vueReglages() {
         <button data-act="gestion" data-log="${l.id}" data-v="agence" class="${ag ? 'on' : ''}">Par une agence</button>
       </div>
       ${ag ? `${inp(l.id + '.agence_nom', 'Nom de l\'agence')}
-        <p class="hint">L'agence encaisse le loyer, envoie les quittances et gère l'assurance : l'application n'envoie rien au locataire. Saisis chaque mois le compte rendu de gestion dans Paiements.</p>
+        <p class="hint">L'agence encaisse le loyer, envoie les quittances et gère l'assurance : l'application n'envoie rien au locataire.</p>
+        ${sw('releve_auto', 'Import automatique des relevés', 'Lit le compte rendu de gestion reçu par email et l\'enregistre')}
+        <div style="margin-top:12px">${inp('releve_expediteur', 'Expéditeur des relevés (adresse ou domaine)', 'text', 'autocomplete="off"')}</div>
+        ${P().releve_derniere_lecture ? `<p class="hint">Dernière lecture : ${esc(P().releve_derniere_lecture)}</p>` : ''}
+        <div class="actions"><button class="btn ghost block" data-act="chercherReleves">Chercher un relevé maintenant</button></div>
     </details>` : ''}
       <div style="margin-bottom:10px${ag ? ';display:none' : ''}">
         ${sw(l.id + '.quittance_active', 'Envoi des quittances', 'Automatique chaque mois, après validation du paiement')}
@@ -1003,6 +1048,15 @@ document.addEventListener('click', async (e) => {
     case 'voirLogement': S.logPaiements = log; changerOnglet('paiements'); break;
     case 'voirReleve': { const r = (S.data.releves || []).find((x) => x.id === t.dataset.v); if (r) ouvrirReleve(r); break; }
     case 'ajouterReleve': ouvrirReleve(null, log, per); break;
+    case 'chercherReleves': {
+      chargement(true, 'Recherche dans ta boîte mail…');
+      try {
+        const r = await api('importerRelevesEmail');
+        await charger(true);
+        toast(cap(r.resultat || 'terminé'));
+      } catch (err) { toast(err.message, true); } finally { chargement(false); }
+      break;
+    }
     case 'gestion':
       if (!S.draft) return;
       S.draft[log + '.gestion'] = t.dataset.v;
@@ -1142,7 +1196,8 @@ function initDemo() {
     corps_assurance: 'Bonjour {civilite} {nom},\n\nJe vous prie de bien vouloir me renvoyer l\'attestation d\'assurance pour la location du :\n\n{adresse}\n{commune}\n\nBien cordialement.\n{signature}',
     objet_relance: 'Rappel : attestation d\'assurance {annee} - {adresse}',
     corps_relance: 'Bonjour {civilite} {nom},\n\nSauf erreur de ma part, je n\'ai pas encore reçu votre attestation d\'assurance {annee}.\n\nBien cordialement.\n{signature}',
-    'maison.gestion': 'agence', 'maison.agence_nom': 'Agence (Villenave-d\'Ornon)',
+    'maison.gestion': 'agence', 'maison.agence_nom': 'Agence (Villenave-d\'Ornon)', releve_auto: true, releve_expediteur: 'laforet.com',
+    releve_derniere_lecture: '20/11/2026 — importé : novembre 2026',
     'trianon.gestion': 'directe', 'trianon.agence_nom': '',
     'maison.quittance_active': false, 'maison.assurance_active': false, 'maison.rappel_impaye': false, 'maison.email2': '', 'maison.adresse': '5 route du chemin Large', 'maison.commune': 'à St Sulpice et Cameyrac.',
     'maison.assurance_envoyee': '', 'maison.derniere_relance': '', 'maison.assurance_recue': '', 'maison.alerte_periode': '', 'maison.rappel_periode': '',
@@ -1240,7 +1295,21 @@ async function demoApi(act, p) {
     case 'ajouterDepense':
       DEMO.depenses.push({ id: 'd' + Date.now(), date: p.date, logement: p.logement, categorie: p.categorie, libelle: p.libelle, montant: Number(p.montant), remarque: p.remarque });
       break;
-    case 'ajouterReleve': demoReleve(p); break;
+    case 'ajouterReleve':
+      if (p.remplacer) DEMO.releves.filter((r) => r.logement === p.logement && p.lignes.some((l) => r.periodes.split(', ').includes(l.periode))).forEach((r) => {
+        DEMO.releves = DEMO.releves.filter((x) => x !== r);
+        DEMO.depenses = DEMO.depenses.filter((d) => !d.id.startsWith(r.id + '-'));
+        DEMO.paiements = DEMO.paiements.filter((x) => !String(x.remarque).includes('[' + r.id + ']'));
+      });
+      demoReleve(p); break;
+    case 'analyserReleve': {
+      const r = { date: '2026-11-20', net: '1140.55', lignes: [{ periode: '2026-11', loyer: '1150.00', provisions: '99.23', detail: 'Régularisation 89,23 €' }],
+        frais: [{ categorie: 'Assurance loyers impayés (GLI)', libelle: 'Cotisation garantie des loyers impayés', montant: '33.73' },
+          { categorie: 'Honoraires d\'agence', libelle: 'Honoraires de gestion', montant: '74.95' }] };
+      r.existants = DEMO.releves.filter((x) => x.logement === p.logement && x.periodes.includes('2026-11')).map((x) => x.id);
+      return r;
+    }
+    case 'importerRelevesEmail': return { resultat: 'démo : aucun nouveau relevé' };
     case 'joindrePdfReleve': { const r = DEMO.releves.find((x) => x.id === p.id); if (r) r.pdf = '#'; break; }
     case 'supprimerReleve':
       DEMO.releves = DEMO.releves.filter((r) => r.id !== p.id);

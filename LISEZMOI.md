@@ -28,3 +28,11 @@
 - **Emails des locataires** : ils sont modifiés directement dans l'onglet Principale (K16 et K31).
 - **Envois** : ils passent tous par ton Gmail, avec une copie cachée à l'adresse de ton choix.
 - **Boutons et cases du tableur** (K3, M3, archmaison…) : ils fonctionnent toujours. Les utiliser vaut validation du paiement du mois.
+
+## Relevés d'agence automatiques (v1.5)
+
+- Chaque heure, le script cherche dans Gmail les emails de l'expéditeur réglé (par défaut `laforet.com`) avec un PDF « Compte rendu de gestion ».
+- Le PDF est converti en texte par Google Drive, lu, vérifié (loyers + provisions − frais = solde créditeur), enregistré et archivé dans « Relevés agence ».
+- Si un relevé du même mois existe avec le même net, seul le PDF est joint ; avec un autre net, il est remplacé par les chiffres du PDF.
+- Si la lecture échoue, un email t'invite à saisir le relevé à la main.
+- Dans l'application, « Ajouter un relevé » › « Lire le PDF du relevé » fait la même lecture à partir d'un PDF choisi.
