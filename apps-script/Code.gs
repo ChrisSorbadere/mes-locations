@@ -116,6 +116,9 @@ function schema_() {
   s.push(['releve_expediteur', 'text', 'laforet.com', 'Adresse ou domaine de l\'expéditeur des relevés d\'agence', true]);
   s.push(['releves_mails_traites', 'text', '', 'Emails de relevés déjà traités (auto)', false]);
   s.push(['releve_derniere_lecture', 'text', '', 'Dernière lecture automatique d\'un relevé (auto)', false]);
+  s.push(['comptes_sync', 'bool', 'TRUE', 'Envoyer le total net des loyers du mois dans l\'appli Comptes (ligne « Loyers France »)', true]);
+  s.push(['comptes_depuis', 'text', '2026-08', 'Premier mois synchronisé avec l\'appli Comptes (aaaa-mm)', false]);
+  s.push(['comptes_derniere_sync', 'text', '', 'Dernière mise à jour de l\'appli Comptes (auto)', false]);
   s.push(['token', 'text', '', 'CODE SECRET de l\'application — ne pas partager', false]);
   return s;
 }
@@ -287,6 +290,11 @@ function tacheAutomatique() {
     // ---- Relevés d'agence reçus par email ----
     if (bool_(P.releve_auto) && Object.keys(LOGEMENTS).some(function (id) { return estAgence_(P, id); })) {
       try { importerRelevesEmail_(); } catch (err) { erreurs.push('Relevé d\'agence : ' + err.message); }
+    }
+
+    // ---- Total des loyers vers l'appli Comptes ----
+    if (bool_(lireParams_().comptes_sync)) {
+      try { synchroniserComptes_(); } catch (err) { erreurs.push('Appli Comptes : ' + err.message); }
     }
 
     // ---- Email « Actions à faire » (au plus un par jour, seulement s'il y a du nouveau) ----
@@ -704,7 +712,11 @@ function doPost(e) {
   if (ecriture && !lock.tryLock(30000)) return json_({ ok: false, error: 'Un envoi est déjà en cours, réessaie dans un instant.' });
 
   try {
-    const data = executer_(req);
+    let data = executer_(req);
+    if (['validerPaiement', 'annulerPaiement', 'ajouterReleve', 'supprimerReleve', 'importerRelevesEmail'].indexOf(req.action) >= 0 &&
+        bool_(lireParams_().comptes_sync)) {
+      try { synchroniserComptes_(); } catch (err) { /* réessayé au prochain passage horaire */ }
+    }
     return json_({ ok: true, data: data });
   } catch (err) {
     return json_({ ok: false, error: err.message });
@@ -810,6 +822,10 @@ function executer_(req) {
       r.existants = relevesCouvrant_(id, r.lignes.map(function (l) { return l.periode; })).map(function (x) { return x.id; });
       return r;
     }
+
+    case 'synchroniserComptes':
+      synchroniserComptes_();
+      return etat_();
 
     case 'importerRelevesEmail':
       return { resultat: importerRelevesEmail_() };
@@ -1344,6 +1360,83 @@ function lireCompteRendu_(texte) {
 }
 
 function euroCourt_(n) { return Number(n).toFixed(2).replace('.', ',') + ' €'; }
+
+// ---------- Appli Comptes : total net des loyers par mois d'arrivée sur le compte ----------
+const COMPTES_SS_ID = '1qFAGMnfFkznxkckuF5eGgY0XSo9qWAGao1vi_e5rkfw';
+const COMPTES_FEUILLE = 'Fin_Archives';
+const COMPTES_CATEGORIE = 'Loyers France';
+
+// { 'aaaa-mm': total } — Maison gérée par l'agence : net viré de chaque relevé (mois du relevé) ;
+// logements en direct : loyers validés (mois de réception), complétés par l'historique de l'onglet Principale.
+function totauxLoyersParMois_() {
+  const releves = lireReleves_();
+  const debutAgence = {};
+  releves.forEach(function (r) { const m = r.date.slice(0, 7); if (!debutAgence[r.logement] || m < debutAgence[r.logement]) debutAgence[r.logement] = m; });
+  const parCle = {};
+  lireHistorique_().forEach(function (h) {
+    const m = h.date.slice(0, 7);
+    ['maison', 'trianon'].forEach(function (id) {
+      if (!(h[id] > 0)) return;
+      if (debutAgence[id] && m >= debutAgence[id]) return;
+      parCle[id + '|' + m] = { mois: m, montant: h[id] };
+    });
+  });
+  lirePaiements_().forEach(function (p) {
+    if (!p.valide_le || p.quittance_le === 'agence') return;
+    const recu = /^\d{4}-\d{2}/.test(p.date_reception) ? p.date_reception.slice(0, 7) : p.periode;
+    delete parCle[p.logement + '|' + p.periode]; // remplace l'entrée d'historique du même loyer
+    parCle[p.logement + '|' + p.periode] = { mois: recu, montant: Number(String(p.montant).replace(',', '.')) || 0 };
+  });
+  const tot = {};
+  Object.keys(parCle).forEach(function (k) { const e = parCle[k]; tot[e.mois] = rond_((tot[e.mois] || 0) + e.montant); });
+  releves.forEach(function (r) { const m = r.date.slice(0, 7); tot[m] = rond_((tot[m] || 0) + r.net); });
+  return tot;
+}
+
+function synchroniserComptes_() {
+  const P = lireParams_();
+  const depuis = String(P.comptes_depuis || '2026-08');
+  const tz = Session.getScriptTimeZone();
+  const courant = Utilities.formatDate(new Date(), tz, 'yyyy-MM');
+  const tot = totauxLoyersParMois_();
+  const sh = SpreadsheetApp.openById(COMPTES_SS_ID).getSheetByName(COMPTES_FEUILLE);
+  if (!sh) throw new Error('feuille « ' + COMPTES_FEUILLE + ' » introuvable dans le classeur Comptes');
+  const n = sh.getLastRow();
+  const valeurs = n >= 2 ? sh.getRange(2, 1, n - 1, 3).getValues() : [];
+  const moisDe = function (v) {
+    if (v instanceof Date) return Utilities.formatDate(v, tz, 'yyyy-MM');
+    const m = String(v).trim().match(/^(\d{4})-(\d{1,2})/); return m ? m[1] + '-' + ('0' + m[2]).slice(-2) : '';
+  };
+  const ligneDe = {};
+  valeurs.forEach(function (r, i) { if (String(r[1]).trim() === COMPTES_CATEGORIE) ligneDe[moisDe(r[0])] = { ligne: i + 2, montant: Number(r[2]) || 0 }; });
+  const changes = [];
+  Object.keys(tot).sort().forEach(function (m) {
+    if (m < depuis || m > courant || !(tot[m] > 0)) return;
+    const ex = ligneDe[m];
+    if (ex) {
+      if (Math.abs(ex.montant - tot[m]) < 0.005) return;
+      sh.getRange(ex.ligne, 3).setValue(tot[m]);
+    } else {
+      sh.appendRow([m, COMPTES_CATEGORIE, tot[m]]);
+      sh.getRange(sh.getLastRow(), 1).setNumberFormat('@').setValue(m);
+    }
+    changes.push(m + ' : ' + euroTxt_(tot[m]));
+  });
+  if (changes.length) {
+    ecrireParam_('comptes_derniere_sync', Utilities.formatDate(new Date(), tz, 'dd/MM/yyyy HH:mm') + ' — ' + changes.join(', '));
+  }
+  return changes;
+}
+
+/** À exécuter une fois depuis l'éditeur pour vérifier l'accès au classeur Comptes et tout mettre à jour. */
+function testerComptes() {
+  const ch = synchroniserComptes_();
+  const tot = totauxLoyersParMois_();
+  const lignes = Object.keys(tot).sort().filter(function (m) { return m >= String(lireParams_().comptes_depuis || '2026-08'); })
+    .map(function (m) { return m + ' : ' + euroTxt_(tot[m]); });
+  const msg = 'Totaux nets des loyers :\n' + lignes.join('\n') + '\n\n' + (ch.length ? 'Mis à jour dans Comptes : ' + ch.length + ' mois.' : 'Comptes était déjà à jour.');
+  try { SpreadsheetApp.getUi().alert(msg); } catch (e) { Logger.log(msg); }
+}
 
 // Locataire actuel (Maison et Trianon), calculé par le script à partir du tableau des locataires de l'onglet Principale
 // (colonnes A nom, B prénom, C civilité, D début, E fin) et écrit en valeurs dans K/L/M.

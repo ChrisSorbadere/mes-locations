@@ -1,7 +1,7 @@
 /* Mes Locations — PWA (vanilla JS) */
 'use strict';
 
-const VERSION = '1.5.0';
+const VERSION = '1.6.0';
 const MOIS = ['janvier', 'février', 'mars', 'avril', 'mai', 'juin', 'juillet', 'août', 'septembre', 'octobre', 'novembre', 'décembre'];
 const MOIS_COURT = ['janv.', 'févr.', 'mars', 'avr.', 'mai', 'juin', 'juil.', 'août', 'sept.', 'oct.', 'nov.', 'déc.'];
 const CATEGORIES = ['Taxe foncière', 'Assurance propriétaire (PNO)', 'Travaux & entretien', 'Charges de copropriété', 'Honoraires d\'agence', 'Assurance loyers impayés (GLI)', 'Frais de gestion', 'Intérêts d\'emprunt', 'Autre'];
@@ -936,6 +936,12 @@ function vueReglages() {
     <div class="actions"><button class="btn ghost block" data-act="testNotif">Recevoir un exemple de notification</button></div>
   </div>`;
 
+  h += `<p class="section-title">Appli Comptes</p><div class="card">
+    ${sw('comptes_sync', 'Envoyer le total des loyers', 'Ligne « Loyers France » de Comptes : net reçu chaque mois (agence + loyers en direct)')}
+    ${P().comptes_derniere_sync ? `<p class="hint">Dernière mise à jour : ${esc(P().comptes_derniere_sync)}</p>` : ''}
+    <div class="actions"><button class="btn ghost block" data-act="syncComptes">Mettre à jour Comptes maintenant</button></div>
+  </div>`;
+
   h += `<p class="section-title">Modèles d'email</p>`;
   [['quittance', 'Quittance'], ['rappel_loyer', 'Rappel de loyer impayé'], ['assurance', 'Demande d\'assurance'], ['relance', 'Relance assurance']].forEach(([k, t]) => {
     h += `<details class="card"><summary><h2 style="font-size:17px">${esc(t)}</h2></summary>
@@ -1048,6 +1054,9 @@ document.addEventListener('click', async (e) => {
     case 'voirLogement': S.logPaiements = log; changerOnglet('paiements'); break;
     case 'voirReleve': { const r = (S.data.releves || []).find((x) => x.id === t.dataset.v); if (r) ouvrirReleve(r); break; }
     case 'ajouterReleve': ouvrirReleve(null, log, per); break;
+    case 'syncComptes':
+      action('Mise à jour de Comptes…', 'synchroniserComptes', {}, 'Comptes est à jour');
+      break;
     case 'chercherReleves': {
       chargement(true, 'Recherche dans ta boîte mail…');
       try {
@@ -1197,7 +1206,8 @@ function initDemo() {
     objet_relance: 'Rappel : attestation d\'assurance {annee} - {adresse}',
     corps_relance: 'Bonjour {civilite} {nom},\n\nSauf erreur de ma part, je n\'ai pas encore reçu votre attestation d\'assurance {annee}.\n\nBien cordialement.\n{signature}',
     'maison.gestion': 'agence', 'maison.agence_nom': 'Agence (Villenave-d\'Ornon)', releve_auto: true, releve_expediteur: 'laforet.com',
-    releve_derniere_lecture: '20/11/2026 — importé : novembre 2026',
+    releve_derniere_lecture: '20/11/2026 — importé : novembre 2026', comptes_sync: true,
+    comptes_derniere_sync: '20/11/2026 22:15 — 2026-11 : 1 560,26 €',
     'trianon.gestion': 'directe', 'trianon.agence_nom': '',
     'maison.quittance_active': false, 'maison.assurance_active': false, 'maison.rappel_impaye': false, 'maison.email2': '', 'maison.adresse': '5 route du chemin Large', 'maison.commune': 'à St Sulpice et Cameyrac.',
     'maison.assurance_envoyee': '', 'maison.derniere_relance': '', 'maison.assurance_recue': '', 'maison.alerte_periode': '', 'maison.rappel_periode': '',
@@ -1309,6 +1319,7 @@ async function demoApi(act, p) {
       r.existants = DEMO.releves.filter((x) => x.logement === p.logement && x.periodes.includes('2026-11')).map((x) => x.id);
       return r;
     }
+    case 'synchroniserComptes': break;
     case 'importerRelevesEmail': return { resultat: 'démo : aucun nouveau relevé' };
     case 'joindrePdfReleve': { const r = DEMO.releves.find((x) => x.id === p.id); if (r) r.pdf = '#'; break; }
     case 'supprimerReleve':

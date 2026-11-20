@@ -36,3 +36,9 @@
 - Si un relevé du même mois existe avec le même net, seul le PDF est joint ; avec un autre net, il est remplacé par les chiffres du PDF.
 - Si la lecture échoue, un email t'invite à saisir le relevé à la main.
 - Dans l'application, « Ajouter un relevé » › « Lire le PDF du relevé » fait la même lecture à partir d'un PDF choisi.
+
+## Lien avec l'appli Comptes (v1.6)
+
+- Chaque heure (et après chaque validation de loyer ou relevé), le script écrit dans le classeur Comptes (`Fin_Archives`) la ligne « Loyers France » de chaque mois depuis août 2026.
+- Montant = net réellement reçu ce mois-là : net viré des relevés d'agence (mois du relevé) + loyers en direct validés (mois de réception).
+- Le compte qui exécute le script doit pouvoir modifier le classeur Comptes. Vérification : exécuter `testerComptes` dans l'éditeur.
