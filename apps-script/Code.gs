@@ -1545,10 +1545,12 @@ function publierDeclarationComptes_(ss, declLignes) {
 const IMPOTS_SS_ID = '1jThZTb0tiJE__FGkaNk9M_Qflk4QBk3tpwCq7f7z5gg';
 
 // Repère la structure d'un onglet « Revenus AAAA » : ligne de janvier, colonnes de revenus (France / hors France), revenus du conjoint
-function structureRevenus_(v) {
-  const txt = function (r, c) { return r >= 0 && r < v.length && c < v[r].length ? String(v[r][c]).trim() : ''; };
+// v : valeurs (nombres), d : valeurs affichées (les mois peuvent être des dates affichées « janvier »)
+function structureRevenus_(v, d) {
+  d = d || v;
+  const txt = function (r, c) { return r >= 0 && r < d.length && c < d[r].length ? String(d[r][c]).trim() : ''; };
   let lj = -1;
-  for (let r = 0; r < v.length && lj < 0; r++) for (let c = 0; c < v[r].length; c++) if (/^janvier$/i.test(txt(r, c))) { lj = r; break; }
+  for (let r = 0; r < v.length && lj < 0; r++) for (let c = 0; c < v[r].length; c++) if (/^janv(ier|\.)?(\s|$)/i.test(txt(r, c))) { lj = r; break; }
   if (lj < 2) throw new Error('ligne « janvier » introuvable');
   const nbCol = Math.max.apply(null, v.map(function (r) { return r.length; }));
   // Colonnes de synthèse : à partir de la première cellule « SYNTHÈSE » ou « VOIR »
@@ -1565,7 +1567,7 @@ function structureRevenus_(v) {
   }
   // Libellé : ligne juste au-dessus de janvier, sinon la précédente (fusion)
   const cols = [];
-  const estMoisCol = function (c) { return /^janvier$/i.test(txt(lj, c)); };
+  const estMoisCol = function (c) { return /^janv(ier|\.)?(\s|$)/i.test(txt(lj, c)); };
   for (let c = 0; c < fin; c++) {
     if (estMoisCol(c) || !groupe[c]) continue;
     let nom = '', src = -1;
@@ -1607,9 +1609,10 @@ function synchroniserImpots_(ssC, declLignes, P) {
     const m = sh.getName().trim().match(/^Revenus\s+(\d{4})$/i);
     if (!m) return;
     const a = m[1];
-    const v = sh.getDataRange().getValues();
+    const rg = sh.getDataRange();
+    const v = rg.getValues(), dv = rg.getDisplayValues();
     let st;
-    try { st = structureRevenus_(v); } catch (err) { journal.push(sh.getName() + ' : ' + err.message); return; }
+    try { st = structureRevenus_(v, dv); } catch (err) { journal.push(sh.getName() + ' : ' + err.message); return; }
     st.cols.forEach(function (c) {
       if (c.loyersFrance && a >= depuis) {
         let modif = 0;
