@@ -1577,6 +1577,7 @@ function structureRevenus_(v, d) {
     }
     const aDesDonnees = v.slice(lj, lj + 12).some(function (r) { return typeof r[c] === 'number'; });
     if (!nom || !(aDesDonnees || src === c || (src === c - 1 && estMoisCol(src)))) continue;
+    if (/pas à déclarer|remb(\.|oursement)?\s*hacienda/i.test(nom)) continue;
     cols.push({ col: c, nom: nom, groupe: groupe[c], loyersFrance: /loyers?\s*france/i.test(nom) });
   }
   let conjoint = null, conjointNom = '';
@@ -1649,6 +1650,44 @@ function synchroniserImpots_(ssC, declLignes, P) {
     fr.getRange(1, 1, texte.length, 5).setNumberFormat('@').setValues(texte);
   }
   return journal;
+}
+
+/**
+ * À exécuter une fois depuis l'éditeur : sort la colonne « Remb. Hacienda » du tableau des revenus
+ * (onglets « Revenus AAAA » du fichier impôts) et la recopie à droite de la synthèse, avec la mention
+ * « Pas à déclarer comme revenu ». Les montants restent visibles mais ne comptent plus dans les revenus.
+ */
+function deplacerRemboursementsHacienda() {
+  const ss = SpreadsheetApp.openById(IMPOTS_SS_ID);
+  const bilan = [];
+  ss.getSheets().forEach(function (sh) {
+    if (!/^Revenus\s+\d{4}$/i.test(sh.getName().trim())) return;
+    const rg = sh.getDataRange();
+    const v = rg.getValues(), d = rg.getDisplayValues();
+    let lj = -1;
+    for (let r = 0; r < d.length && lj < 0; r++) for (let c = 0; c < d[r].length; c++) if (/^janv(ier|\.)?(\s|$)/i.test(String(d[r][c]).trim())) { lj = r; break; }
+    if (lj < 1) return;
+    let col = -1;
+    for (let c = 0; c < d[lj - 1].length; c++) if (/remb(\.|oursement)?\s*hacienda/i.test(String(d[lj - 1][c]))) col = c;
+    if (col < 0) return;
+    const dest = sh.getLastColumn() + 2; // une colonne vide puis le bloc
+    const nb = 12;
+    // Titre, en-tête et montants
+    sh.getRange(lj - 1, dest).setValue('PAS À DÉCLARER COMME REVENU').setFontWeight('bold').setFontColor('#C62828').setWrap(true);
+    sh.getRange(lj, dest).setValue(String(d[lj - 1][col]).trim() + ' (remboursement d\'impôt)').setFontWeight('bold').setWrap(true);
+    sh.getRange(lj + 1, dest, nb, 1).setValues(v.slice(lj, lj + nb).map(function (r) { return [r[col]]; }))
+      .setNumberFormat('#,##0.00 €');
+    sh.getRange(lj + 1, dest - 1, nb, 1).setValues(d.slice(lj, lj + nb).map(function (r) { return [r[0]]; })).setFontColor('#777777');
+    sh.getRange(lj - 1, dest, 1, 1).setNote('Remboursement d\'IRPF par Hacienda : ce n\'est pas un revenu, il ne se déclare pas. Déplacé hors du tableau des revenus par Mes Locations.');
+    sh.setColumnWidth(dest, 170);
+    // Retrait du tableau des revenus
+    sh.getRange(lj, col + 1).clearContent();
+    sh.getRange(lj + 1, col + 1, nb, 1).clearContent();
+    bilan.push(sh.getName() + ' : colonne déplacée en ' + sh.getRange(1, dest).getA1Notation().replace(/\d+/, ''));
+  });
+  const msg = bilan.length ? bilan.join('\n') : 'Aucune colonne « Remb. Hacienda » trouvée.';
+  try { SpreadsheetApp.getUi().alert(msg); } catch (e) { Logger.log(msg); }
+  try { synchroniserComptes_(); } catch (e) { /* mis à jour au prochain passage horaire */ }
 }
 
 /** À exécuter une fois depuis l'éditeur pour vérifier l'accès au classeur Comptes et tout mettre à jour. */
