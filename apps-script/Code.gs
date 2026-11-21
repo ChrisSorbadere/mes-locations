@@ -1653,39 +1653,81 @@ function synchroniserImpots_(ssC, declLignes, P) {
 }
 
 /**
- * À exécuter une fois depuis l'éditeur : sort la colonne « Remb. Hacienda » du tableau des revenus
- * (onglets « Revenus AAAA » du fichier impôts) et la recopie à droite de la synthèse, avec la mention
- * « Pas à déclarer comme revenu ». Les montants restent visibles mais ne comptent plus dans les revenus.
+ * À exécuter une fois depuis l'éditeur. Pour chaque onglet « Revenus AAAA » du fichier impôts qui a une colonne « Remb. Hacienda » :
+ *  - recopie la colonne (mois, montants, total) à droite de la synthèse, sous le titre « PAS À DÉCLARER COMME REVENU » ;
+ *  - vide la colonne dans le tableau des revenus ;
+ *  - exclut cette colonne du « TOTAL À DÉCLARER » des revenus hors France (ex. =SUM(H19:L19) → =SUM(H19:K19)) ;
+ *  - fait pointer « REVENUS HORS FRANCE : » de la synthèse vers ce total à déclarer (au lieu du seul total du lycée).
+ * Les onglets sans colonne « Remb. Hacienda » (ex. 2025, déjà déclaré) ne sont pas touchés.
  */
 function deplacerRemboursementsHacienda() {
   const ss = SpreadsheetApp.openById(IMPOTS_SS_ID);
   const bilan = [];
+  const lettre = function (c) { let s = ''; c++; while (c > 0) { const m = (c - 1) % 26; s = String.fromCharCode(65 + m) + s; c = Math.floor((c - 1) / 26); } return s; };
   ss.getSheets().forEach(function (sh) {
     if (!/^Revenus\s+\d{4}$/i.test(sh.getName().trim())) return;
     const rg = sh.getDataRange();
-    const v = rg.getValues(), d = rg.getDisplayValues();
+    const d = rg.getDisplayValues(), v = rg.getValues(), f = rg.getFormulas();
+    const nbL = d.length, nbC = d[0].length;
     let lj = -1;
-    for (let r = 0; r < d.length && lj < 0; r++) for (let c = 0; c < d[r].length; c++) if (/^janv(ier|\.)?(\s|$)/i.test(String(d[r][c]).trim())) { lj = r; break; }
+    for (let r = 0; r < nbL && lj < 0; r++) for (let c = 0; c < nbC; c++) if (/^janv(ier|\.)?(\s|$)/i.test(String(d[r][c]).trim())) { lj = r; break; }
     if (lj < 1) return;
     let col = -1;
-    for (let c = 0; c < d[lj - 1].length; c++) if (/remb(\.|oursement)?\s*hacienda/i.test(String(d[lj - 1][c]))) col = c;
-    if (col < 0) return;
-    const dest = sh.getLastColumn() + 2; // une colonne vide puis le bloc
-    const nb = 12;
-    // Titre, en-tête et montants
-    sh.getRange(lj - 1, dest).setValue('PAS À DÉCLARER COMME REVENU').setFontWeight('bold').setFontColor('#C62828').setWrap(true);
-    sh.getRange(lj, dest).setValue(String(d[lj - 1][col]).trim() + ' (remboursement d\'impôt)').setFontWeight('bold').setWrap(true);
-    sh.getRange(lj + 1, dest, nb, 1).setValues(v.slice(lj, lj + nb).map(function (r) { return [r[col]]; }))
-      .setNumberFormat('#,##0.00 €');
-    sh.getRange(lj + 1, dest - 1, nb, 1).setValues(d.slice(lj, lj + nb).map(function (r) { return [r[0]]; })).setFontColor('#777777');
-    sh.getRange(lj - 1, dest, 1, 1).setNote('Remboursement d\'IRPF par Hacienda : ce n\'est pas un revenu, il ne se déclare pas. Déplacé hors du tableau des revenus par Mes Locations.');
+    for (let c = 0; c < nbC; c++) if (/remb(\.|oursement)?\s*hacienda/i.test(String(d[lj - 1][c]))) col = c;
+    if (col < 0) { bilan.push(sh.getName() + ' : pas de colonne « Remb. Hacienda », rien à faire'); return; }
+    const L = lettre(col), K = lettre(col - 1);
+    // Ligne TOTAL (somme de la colonne) et ligne TOTAL À DÉCLARER
+    let rTot = -1, rDecl = -1;
+    for (let r = lj + 12; r < nbL; r++) {
+      if (rTot < 0 && /^=SUM\(/i.test(f[r][col])) rTot = r;
+      for (let c = 0; c < nbC; c++) if (rDecl < 0 && /TOTAL\s+À\s+DÉCLARER/i.test(d[r][c]) && c > 0 && c <= col) rDecl = r;
+    }
+    // 1. Recopie à droite de la synthèse
+    let dernier = 0;
+    for (let r = 0; r < Math.min(nbL, lj + 16); r++) for (let c = 0; c < nbC; c++) if (String(d[r][c]).trim() !== '') dernier = Math.max(dernier, c);
+    const dest = dernier + 4; // n° de colonne (1 = A) des montants : une colonne vide, les mois, puis les montants
+    sh.getRange(lj - 1, dest - 1, 1, 2).merge().setValue('PAS À DÉCLARER COMME REVENU')
+      .setFontWeight('bold').setFontColor('#C62828').setHorizontalAlignment('center').setWrap(true);
+    sh.getRange(lj, dest).setValue('Remb. Hacienda (remboursement d\'impôt)').setFontWeight('bold').setWrap(true);
+    sh.getRange(lj + 1, dest - 1, 12, 1).setValues(d.slice(lj, lj + 12).map(function (r) { return [r[0]]; })).setFontColor('#777777');
+    sh.getRange(lj + 1, dest, 12, 1).setValues(v.slice(lj, lj + 12).map(function (r) { return [r[col]]; })).setNumberFormat('#,##0.00 €');
+    const D = lettre(dest - 1);
+    sh.getRange(lj + 13, dest - 1).setValue('TOTAL').setFontWeight('bold');
+    sh.getRange(lj + 13, dest).setFormula('=SUM(' + D + (lj + 1) + ':' + D + (lj + 12) + ')').setNumberFormat('#,##0.00 €').setFontWeight('bold');
+    sh.getRange(lj - 1, dest - 1).setNote('Remboursement d\'IRPF par Hacienda : ce n\'est pas un revenu, il ne se déclare pas. Colonne sortie du tableau des revenus par Mes Locations.');
     sh.setColumnWidth(dest, 170);
-    // Retrait du tableau des revenus
+    // 2. Colonne vidée dans le tableau des revenus (en-tête et montants)
     sh.getRange(lj, col + 1).clearContent();
-    sh.getRange(lj + 1, col + 1, nb, 1).clearContent();
-    bilan.push(sh.getName() + ' : colonne déplacée en ' + sh.getRange(1, dest).getA1Notation().replace(/\d+/, ''));
+    sh.getRange(lj + 1, col + 1, 12, 1).clearContent();
+    // 3. TOTAL À DÉCLARER sans cette colonne
+    let totalHors = '';
+    if (rDecl >= 0) {
+      for (let c = 0; c < nbC; c++) {
+        const fx = f[rDecl][c];
+        if (fx && new RegExp(':' + L + (rTot + 1) + '\\)').test(fx)) {
+          const nf = fx.replace(new RegExp(':' + L + (rTot + 1) + '\\)'), ':' + K + (rTot + 1) + ')');
+          sh.getRange(rDecl + 1, c + 1).setFormula(nf);
+          totalHors = lettre(c) + (rDecl + 1);
+          bilan.push(sh.getName() + ' : ' + totalHors + ' ' + fx + ' → ' + nf);
+        }
+      }
+    }
+    // 4. Synthèse « REVENUS HORS FRANCE : » → total à déclarer
+    if (totalHors) {
+      for (let r = 0; r < Math.min(nbL, lj + 12); r++) for (let c = col + 1; c < nbC; c++) {
+        if (!/REVENUS\s+HORS\s+FRANCE/i.test(d[r][c])) continue;
+        for (let k = c + 1; k < nbC; k++) if (f[r][k]) {
+          if (f[r][k] !== '=' + totalHors) {
+            sh.getRange(r + 1, k + 1).setFormula('=' + totalHors);
+            bilan.push(sh.getName() + ' : ' + lettre(k) + (r + 1) + ' ' + f[r][k] + ' → =' + totalHors);
+          }
+          break;
+        }
+      }
+    }
+    bilan.push(sh.getName() + ' : colonne « Remb. Hacienda » déplacée en ' + lettre(dest - 2) + '–' + lettre(dest - 1));
   });
-  const msg = bilan.length ? bilan.join('\n') : 'Aucune colonne « Remb. Hacienda » trouvée.';
+  const msg = bilan.length ? bilan.join('\n') : 'Aucun onglet « Revenus AAAA » trouvé.';
   try { SpreadsheetApp.getUi().alert(msg); } catch (e) { Logger.log(msg); }
   try { synchroniserComptes_(); } catch (e) { /* mis à jour au prochain passage horaire */ }
 }
