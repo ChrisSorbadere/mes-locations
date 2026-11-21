@@ -1,7 +1,7 @@
 /* Mes Locations — PWA (vanilla JS) */
 'use strict';
 
-const VERSION = '1.7.0';
+const VERSION = '1.8.0';
 const MOIS = ['janvier', 'février', 'mars', 'avril', 'mai', 'juin', 'juillet', 'août', 'septembre', 'octobre', 'novembre', 'décembre'];
 const MOIS_COURT = ['janv.', 'févr.', 'mars', 'avr.', 'mai', 'juin', 'juil.', 'août', 'sept.', 'oct.', 'nov.', 'déc.'];
 const CATEGORIES = ['Taxe foncière', 'Assurance propriétaire (PNO)', 'Travaux & entretien', 'Charges de copropriété', 'Honoraires d\'agence', 'Assurance loyers impayés (GLI)', 'Frais de gestion', 'Intérêts d\'emprunt', 'Autre'];
@@ -13,7 +13,7 @@ const S = {
   tab: 'accueil',
   logPaiements: null,
   filtreType: 'tout', filtreLog: 'tout',
-  bilanAnnee: null, bilanLog: 'tout',
+  bilanAnnee: null, bilanLog: 'tout', declAnnee: null,
   draft: null, dirty: false
 };
 
@@ -704,7 +704,7 @@ function vueBilan() {
       <tr><th>Total</th><th>${euro(b.totalIn)}</th><th>${euro(b.totalOut)}</th><th>${euro(b.net)}</th></tr></tbody></table>
     </details></div>`;
 
-  h += vueDeclaration(a);
+  h += vueDeclaration();
 
   // Dépenses
   const cats = Object.entries(b.parCat).sort((x, y) => y[1] - x[1]);
@@ -817,33 +817,59 @@ function declaration(annee) {
     tot: { loyers: somme(loyers), charges: somme(charges), frais: somme(totFrais), resultat: somme(resultat) } };
 }
 
-function vueDeclaration(a) {
+const URL_COMPTES_IMPOTS = 'https://chrissorbadere.github.io/suivi-cours/#impots';
+
+// Années proposées : celles qui ont des loyers ou des dépenses, jamais dans le futur.
+// Par défaut : l'année précédente de janvier à juin (période de déclaration), sinon l'année en cours.
+function anneesDeclaration() {
+  const auj = new Date(), courante = String(auj.getFullYear());
+  const set = new Set();
+  encaissements().forEach((e) => set.add(((/^\d{4}/.test(e.date_reception || '') ? e.date_reception : e.periode) || '').slice(0, 4)));
+  (S.data.depenses || []).forEach((x) => set.add(String(x.date).slice(0, 4)));
+  const liste = [...set].filter((y) => /^\d{4}$/.test(y) && y <= courante).sort().reverse();
+  const defaut = auj.getMonth() < 6 && liste.includes(String(auj.getFullYear() - 1)) ? String(auj.getFullYear() - 1) : liste[0];
+  if (!S.declAnnee || !liste.includes(S.declAnnee)) S.declAnnee = defaut;
+  return liste.slice(0, 6);
+}
+
+function vueDeclaration() {
+  const annees = anneesDeclaration();
+  const a = S.declAnnee;
+  if (!a) return '';
   const d = declaration(a);
   const libL = (id) => esc(logement(id)?.libelle || id);
   const ligne = (n, lib, o, total, fort) => `<div class="line-item decl-l${fort ? ' fort' : ''}"><span class="label">${n ? `<b>${n}</b> ` : ''}${esc(lib)}
       <small>${d.logs.map((id) => `${libL(id)} ${euro(o[id])}`).join(' · ')}</small></span><span class="value">${euro(total)}</span></div>`;
-  let h = `<p class="section-title">Déclaration ${Number(a) + 1} · revenus fonciers ${a}</p><div class="card">
-    <p class="hint" style="margin-top:0">Montants à reporter sur la déclaration 2044 (régime réel). Loyers comptés à leur date d'encaissement, hors charges récupérées.</p>
+  const res = d.tot.resultat;
+  let h = `<p class="section-title decl-titre">Déclaration ${Number(a) + 1} · revenus fonciers ${a}</p>
+  <div class="card decl-carte">
+    <div class="year-chips" style="margin-bottom:12px">${annees.map((y) => `<button class="chip ${y === a ? 'on' : ''}" data-act="declAnnee" data-v="${y}">${y}</button>`).join('')}</div>
+    <div class="decl-resultat">
+      <span class="lbl">${res >= 0 ? 'Résultat foncier à reporter · 2042, case 4BA' : 'Déficit foncier · voir notice 2044 (4BB / 4BC)'}</span>
+      <span class="mt">${euro(Math.abs(res))}</span>
+      <span class="sous">${d.logs.map((id) => `${libL(id)} ${euro(d.resultat[id])}`).join(' · ')}</span>
+    </div>
+    <p class="hint">Formulaire 2044, régime réel. Loyers comptés à leur date d'encaissement, hors charges récupérées.</p>
     ${ligne('211', 'Loyers bruts encaissés', d.loyers, d.tot.loyers)}`;
   d.lignes.forEach((L) => {
     if (!L.total && !['221', '222', '223', '224', '227'].includes(L.n)) return;
     h += ligne(L.n, L.lib, L.v, L.total);
   });
   h += `${ligne('240', 'Total des frais et charges', d.totFrais, d.tot.frais, true)}
-    ${ligne('', 'Résultat foncier', d.resultat, d.tot.resultat, true)}
-    <div class="line-item"><span class="label">${d.tot.resultat >= 0 ? 'Bénéfice foncier à reporter (2042, case 4BA)' : 'Déficit foncier (voir notice 2044, cases 4BB / 4BC)'}</span><span class="value"><b>${euro(Math.abs(d.tot.resultat))}</b></span></div>
     <div class="line-item"><span class="label">Charges récupérées auprès des locataires (non déclarées)</span><span class="value">${euro(d.tot.charges)}</span></div>
     <details class="plain"><summary>Mois par mois</summary>
       <table class="data"><thead><tr><th>Mois</th><th>Loyers HC</th><th>Charges</th><th>Frais</th><th>Résultat</th></tr></thead><tbody>
       ${d.mois.map((m) => `<tr><td>${cap(MOIS[m.i])}</td><td>${euro(m.brut)}</td><td>${euro(m.charges)}</td><td>${euro(m.frais)}</td><td>${euro(m.brut - m.frais)}</td></tr>`).join('')}
       <tr><th>Total</th><th>${euro(d.tot.loyers)}</th><th>${euro(d.tot.charges)}</th><th>${euro(d.tot.frais)}</th><th>${euro(d.tot.resultat)}</th></tr></tbody></table>
     </details>
+    <a class="btn block decl-lien" href="${URL_COMPTES_IMPOTS}" target="_blank" rel="noopener">Voir l'onglet Impôts dans Comptes</a>
+    <p class="hint" style="text-align:center;margin-top:6px">Salaires, revenus en expatriation et revenus du conjoint</p>
+    <div class="actions"><button class="btn ghost grow" data-act="exportDeclCsv">Export CSV</button><button class="btn ghost grow" data-act="exportDeclPdf">Export PDF</button></div>
     <p class="note">${d.tot.loyers + d.tot.charges > 15000 ? 'Loyers bruts supérieurs à 15 000 € : le régime réel (2044) s\'applique. ' : 'Loyers bruts inférieurs à 15 000 € : le micro-foncier (abattement de 30 %) est aussi possible. '}`
     + `Taxe foncière : saisis-la sans la taxe d'ordures ménagères. Dépenses communes réparties à parts égales entre les logements. Le forfait de 20 € est compté en décembre.`
     + `${d.estime ? ' Certains mois viennent de l\'historique du tableur : leurs charges sont estimées.' : ''}`
     + `${d.nonClasses.length ? ` ${d.nonClasses.length} dépense(s) en catégorie « Autre » non comptée(s) : vérifie si elles sont déductibles.` : ''}`
     + ` Document d'aide, à vérifier avec la notice ou un conseiller.</p>
-    <div class="actions"><button class="btn ghost grow" data-act="exportDeclCsv">Export CSV</button><button class="btn ghost grow" data-act="exportDeclPdf">Export PDF</button></div>
   </div>`;
   return h;
 }
@@ -871,7 +897,7 @@ function tableauxDeclaration(d) {
 }
 
 function exporterDeclCsv() {
-  const d = declaration(S.bilanAnnee);
+  const d = declaration(S.declAnnee);
   const t = tableauxDeclaration(d);
   const lignes = [['Revenus fonciers ' + d.annee + ' (déclaration ' + (Number(d.annee) + 1) + ')'], [], t.tete, ...t.rows, [],
     [d.tot.resultat >= 0 ? 'Bénéfice foncier (2042 case 4BA)' : 'Déficit foncier', '', '', t.f(Math.abs(d.tot.resultat))], [], t.mt, ...t.mr, [],
@@ -896,7 +922,7 @@ async function exporterDeclPdf() {
   try {
     await chargerScript('lib/jspdf.umd.min.js');
     await chargerScript('lib/jspdf.plugin.autotable.min.js');
-    const d = declaration(S.bilanAnnee);
+    const d = declaration(S.declAnnee);
     const t = tableauxDeclaration(d);
     const pdf = new window.jspdf.jsPDF({ unit: 'mm', format: 'a4' });
     const net = (x) => String(x).replace(/[  ]/g, ' ');
@@ -1203,6 +1229,7 @@ document.addEventListener('click', async (e) => {
     case 'filtreType': S.filtreType = t.dataset.v; rendre(); break;
     case 'filtreLog': S.filtreLog = t.dataset.v; rendre(); break;
     case 'bilanAnnee': S.bilanAnnee = t.dataset.v; rendre(); break;
+    case 'declAnnee': S.declAnnee = t.dataset.v; rendre(); break;
     case 'bilanLog': S.bilanLog = t.dataset.v; rendre(); break;
     case 'ajouterDepense': ouvrirDepense(null); break;
     case 'voirLogement': S.logPaiements = log; changerOnglet('paiements'); break;

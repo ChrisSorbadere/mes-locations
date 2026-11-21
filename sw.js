@@ -1,4 +1,4 @@
-const CACHE = 'mes-locations-v1.7.0';
+const CACHE = 'mes-locations-v1.8.0';
 const FICHIERS = ['./', 'index.html', 'style.css', 'app.js', 'manifest.json', 'icons/favicon.png', 'icon-192.png', 'icon-512.png'];
 
 self.addEventListener('install', (e) => {
