@@ -1732,6 +1732,33 @@ function deplacerRemboursementsHacienda() {
   try { synchroniserComptes_(); } catch (e) { /* mis à jour au prochain passage horaire */ }
 }
 
+/**
+ * À exécuter une fois depuis l'éditeur : enregistre les travaux 2026 de séparation des deux logements
+ * (factures PEM Gistain, Enedis, SAUR) dans l'onglet Dépenses, catégorie « Travaux & entretien » (ligne 224).
+ * Sans doublon : une ligne déjà présente (même ID) n'est pas réécrite.
+ */
+function ajouterTravaux2026() {
+  const T = [
+    ['TRV26-01', '2026-02-03', 'trianon', 'PEM Gistain F-2026-0296 : acompte 30 % devis D-2025-0257 (accès et réseaux)', 5540.40],
+    ['TRV26-02', '2026-03-01', 'trianon', 'PEM Gistain F-2026-0302 : création de l\'accès, passage réseaux eau/électricité/télécom', 6028.00],
+    ['TRV26-03', '2026-03-25', 'trianon', 'Enedis 3261-0690960450 : raccordement électrique 5 bis', 1544.40],
+    ['TRV26-04', '2026-04-03', 'trianon', 'PEM Gistain F-2026-0311 : accès (décapage, ballast, concassé) et buse', 7272.00],
+    ['TRV26-05', '2026-04-03', 'commun', 'PEM Gistain F-2026-0311 : clôture de séparation 60 ml', 1752.00],
+    ['TRV26-06', '2026-04-08', 'trianon', 'SAUR devis D595260016783 : branchement eau 5 bis', 2048.28],
+    ['TRV26-07', '2026-04-24', 'trianon', 'PEM Gistain F-2026-0315 : remise aux normes électriques petite maison', 3000.00],
+    ['TRV26-08', '2026-08-10', 'trianon', 'PEM Gistain F-2026-0332 : raccordements eau et électricité petite maison', 1752.00]
+  ];
+  const sh = feuilleDepenses_();
+  const deja = lireDepenses_().map(function (d) { return d.id; });
+  const aAjouter = T.filter(function (t) { return deja.indexOf(t[0]) < 0; })
+    .map(function (t) { return [t[0], t[1], t[2], 'Travaux & entretien', t[3], t[4].toFixed(2), 'Séparation des logements (factures 2026)']; });
+  if (aAjouter.length) sh.getRange(sh.getLastRow() + 1, 1, aAjouter.length, 7).setNumberFormat('@').setValues(aAjouter);
+  const total = T.reduce(function (s, t) { return s + t[4]; }, 0);
+  const msg = aAjouter.length + ' dépense(s) ajoutée(s) sur ' + T.length + ' · total des travaux : ' + euroTxt_(total);
+  try { SpreadsheetApp.getUi().alert(msg); } catch (e) { Logger.log(msg); }
+  try { synchroniserComptes_(); } catch (e) { /* prochain passage horaire */ }
+}
+
 /** À exécuter une fois depuis l'éditeur pour vérifier l'accès au classeur Comptes et tout mettre à jour. */
 function testerComptes() {
   const ch = synchroniserComptes_();
